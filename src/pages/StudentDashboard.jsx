@@ -7,6 +7,7 @@ import {
   mockPricingRules
 } from '../data/mockData';
 import { printService } from '../services/printService';
+import { getAIResponse } from '../services/aiAssistantService';
 
 /**
  * Student Dashboard Component
@@ -26,12 +27,20 @@ export const StudentDashboard = ({ onNavigate }) => {
   const [notifications, setNotifications] = useState(() => printService.getNotifications('student'));
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false);
 
+  // Loading & server connection state (Step 11)
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [serverError, setServerError] = useState(null);
+
   // Synchronize with printService on mount and subscribe to real-time changes
   useEffect(() => {
+    let isMounted = true;
+
     const syncData = () => {
-      const studentJobs = printService.getStudentJobs();
+      if (!isMounted) return;
+      const studentJobs = printService.getStudentJobs(mockCurrentUser.id);
       setJobsList(studentJobs);
-      setNotifications(printService.getNotifications('student'));
+      setNotifications(printService.getNotifications('student', mockCurrentUser.id));
 
       setCurrentJob(prev => {
         if (!prev) return studentJobs[0] || null;
@@ -40,9 +49,35 @@ export const StudentDashboard = ({ onNavigate }) => {
       });
     };
 
+    // 1. Initial cached render
     syncData();
+
+    // 2. Initial backend fetch
+    setIsLoading(true);
+    printService.syncWithBackend(mockCurrentUser.id)
+      .then(() => {
+        if (isMounted) syncData();
+      })
+      .catch(err => {
+        console.warn('Initial backend sync failed, using fallback:', err.message);
+      })
+      .finally(() => {
+        if (isMounted) setIsLoading(false);
+      });
+
+    // 3. Subscribe to state updates
     const unsubscribe = printService.subscribe(syncData);
-    return () => unsubscribe();
+
+    // 4. Real-time style polling (every 6 seconds) with clean up on unmount
+    const pollInterval = setInterval(() => {
+      printService.syncWithBackend(mockCurrentUser.id).catch(() => {});
+    }, 6000);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      clearInterval(pollInterval);
+    };
   }, []);
 
   // New Print Form state
@@ -58,17 +93,12 @@ export const StudentDashboard = ({ onNavigate }) => {
   });
   const [submissionSuccess, setSubmissionSuccess] = useState(null);
 
-  // AI Assistant Chat state
+  // AI Assistant Chat state (Step 8)
   const [chatMessages, setChatMessages] = useState([
     {
       id: 1,
-      sender: 'student',
-      text: 'Is my project report ready?'
-    },
-    {
-      id: 2,
       sender: 'ai',
-      text: 'Your Project_Report.pdf is currently ready for collection at Counter 1 (PIN: 9024). Your AI_Immersion_Report.pdf is currently printing with an estimated waiting time of 6 minutes.'
+      text: 'Hello! I am your SmartPrint AI Assistant. Ask me about your print jobs, queue position, waiting time, or collection status.'
     }
   ]);
   const [inputQuestion, setInputQuestion] = useState('');
@@ -82,7 +112,7 @@ export const StudentDashboard = ({ onNavigate }) => {
   const printingNowCount = jobsList.filter(j => j.status === 'Printing').length;
   const readyCount = jobsList.filter(j => j.status === 'Ready').length;
   const completedCount = jobsList.filter(j => j.status === 'Collected' || j.status === 'Completed').length;
-  const unreadNotifCount = notifications.filter(n => n.isUnread).length;
+  const unreadNotifCount = notifications.filter(n => !n.read && n.isUnread !== false).length;
 
   // Handle Mock File Upload
   const handleFileSelect = (e) => {
@@ -130,48 +160,63 @@ export const StudentDashboard = ({ onNavigate }) => {
     binding: formData.bindingOption
   });
 
-  // Submit New Print Form via shared printService
-  const handleSubmitPrint = (e) => {
+  // Submit New Print Form via shared printService (Primary: Backend API, Fallback: Local)
+  const handleSubmitPrint = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     const docName = formData.fileName.trim() || 'Student_Document_Submission.pdf';
+    setIsSubmitting(true);
+    setServerError(null);
 
-    const newJob = printService.addPrintJob({
-      documentName: docName,
-      fileName: docName,
-      copies: formData.copies,
-      printType: formData.printType,
-      pages: formData.pageRangeType === 'custom' ? (formData.customPages ? 4 : 8) : 12,
-      pageRange: formData.pageRangeType === 'custom' ? (formData.customPages || 'Custom Pages') : 'All Pages',
-      paperSize: formData.paperSize,
-      isDoubleSided: true,
-      bindingOption: formData.bindingOption,
-      binding: formData.bindingOption,
-      cost: estimatedNewCost
-    });
+    try {
+      const newJob = await printService.addPrintJob({
+        documentName: docName,
+        fileName: docName,
+        copies: formData.copies,
+        printType: formData.printType,
+        pages: formData.pageRangeType === 'custom' ? (formData.customPages ? 4 : 8) : 12,
+        pageRange: formData.pageRangeType === 'custom' ? (formData.customPages || 'Custom Pages') : 'All Pages',
+        paperSize: formData.paperSize,
+        isDoubleSided: true,
+        bindingOption: formData.bindingOption,
+        binding: formData.bindingOption,
+        cost: estimatedNewCost,
+        student: mockCurrentUser.name,
+        studentId: mockCurrentUser.id
+      });
 
-    setCurrentJob(newJob);
+      if (newJob) {
+        setCurrentJob(newJob);
 
-    // Show friendly success confirmation message
-    setSubmissionSuccess({
-      jobId: newJob.id,
-      docName: newJob.documentName || newJob.fileName,
-      pin: newJob.pickupPin
-    });
+        // Show friendly success confirmation message
+        setSubmissionSuccess({
+          jobId: newJob.id,
+          docName: newJob.documentName || newJob.fileName,
+          pin: newJob.pickupPin
+        });
+      }
 
-    // Reset Form
-    setFormData({
-      fileName: '',
-      uploadedFile: null,
-      copies: 1,
-      printType: 'B&W',
-      pageRangeType: 'all',
-      customPages: '',
-      paperSize: 'A4',
-      bindingOption: 'None'
-    });
+      // Reset Form
+      setFormData({
+        fileName: '',
+        uploadedFile: null,
+        copies: 1,
+        printType: 'B&W',
+        pageRangeType: 'all',
+        customPages: '',
+        paperSize: 'A4',
+        bindingOption: 'None'
+      });
+    } catch (err) {
+      console.error('Print submission error:', err);
+      setServerError('Unable to connect to SmartPrint AI server. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  // AI Assistant Query Handler
+  // AI Assistant Query Handler (Step 8 & 11 - Uses latest backend data)
   const handleSendQuery = (textToSend) => {
     const query = (textToSend || inputQuestion).trim();
     if (!query) return;
@@ -186,33 +231,11 @@ export const StudentDashboard = ({ onNavigate }) => {
     setInputQuestion('');
     setIsTyping(true);
 
-    // Generate intelligent contextual response
+    // Call decoupled AI Assistant Service with latest student and system print jobs
     setTimeout(() => {
-      let reply = '';
-      const lower = query.toLowerCase();
-
-      if (lower.includes('project_report') || lower.includes('project report')) {
-        reply = `Your Project_Report.pdf is Ready for collection at Counter 1! Your pickup PIN is 9024.`;
-      } else if (lower.includes('ai_immersion') || lower.includes('immersion') || lower.includes('report') || lower.includes('current')) {
-        reply = `Your AI_Immersion_Report.pdf is currently in the Printing stage on Xerox WorkCentre 7845. Estimated waiting time is 6 minutes.`;
-      } else if (lower.includes('ready') || lower.includes('pickup') || lower.includes('collection')) {
-        const readyJobs = jobsList.filter(j => j.status === 'Ready');
-        if (readyJobs.length > 0) {
-          reply = `You have ${readyJobs.length} job ready for pickup: ${readyJobs.map(j => `${j.documentName} (PIN: ${j.pickupPin})`).join(', ')}.`;
-        } else {
-          reply = `You currently have no jobs ready for pickup. Your active jobs are being processed in the queue.`;
-        }
-      } else if (lower.includes('wait') || lower.includes('time') || lower.includes('how long')) {
-        reply = `The average waiting time at the Xerox counter is currently ~6 minutes with 2 active jobs in your queue.`;
-      } else if (lower.includes('pin') || lower.includes('code')) {
-        reply = `Your active pickup PINs are: ${jobsList.map(j => `${j.documentName}: ${j.pickupPin}`).join(' | ')}.`;
-      } else if (lower.includes('rate') || lower.includes('price') || lower.includes('cost')) {
-        reply = `College Xerox rates: B&W is ₹1.00/single page (₹1.50 duplex), Color is ₹5.00/page, Spiral Binding is ₹20.00.`;
-      } else if (lower.includes('status') || lower.includes('where')) {
-        reply = `Current Status: "${currentJob.documentName}" is at the [${currentJob.status}] stage. Assigned to: ${currentJob.assignedPrinter}.`;
-      } else {
-        reply = `I am tracking ${jobsList.length} print jobs for you. "${currentJob.documentName}" is currently ${currentJob.status}. You can ask about waiting times, rates, or pickup PINs!`;
-      }
+      const allJobs = printService.getPrintJobs();
+      const currentStudentJobs = printService.getStudentJobs(mockCurrentUser.id);
+      const reply = getAIResponse(query, currentStudentJobs, allJobs);
 
       setChatMessages(prev => [
         ...prev,
@@ -223,7 +246,17 @@ export const StudentDashboard = ({ onNavigate }) => {
         }
       ]);
       setIsTyping(false);
-    }, 600);
+    }, 350);
+  };
+
+  const handleClearChat = () => {
+    setChatMessages([
+      {
+        id: Date.now(),
+        sender: 'ai',
+        text: 'Chat history cleared. How can I help you with your print jobs today?'
+      }
+    ]);
   };
 
   // Helper to map status badge classes
@@ -236,6 +269,35 @@ export const StudentDashboard = ({ onNavigate }) => {
       case 'Collected': return 'completed';
       default: return 'queued';
     }
+  };
+
+  // Notification Action Handlers (Step 9 & 11 - Express Backend Integration)
+  const handleMarkSingleAsRead = async (e, notifId) => {
+    if (e && e.stopPropagation) e.stopPropagation();
+    const updated = await printService.markNotificationAsRead(notifId);
+    setNotifications(updated);
+  };
+
+  const handleMarkAllAsRead = async () => {
+    const updated = await printService.markNotificationsRead('student', mockCurrentUser.id);
+    setNotifications(updated);
+  };
+
+  const handleClearNotifications = async () => {
+    if (window.confirm('Are you sure you want to clear all notifications?')) {
+      const updated = await printService.clearNotifications(mockCurrentUser.id);
+      setNotifications(updated);
+    }
+  };
+
+  const getNotifIcon = (type, status) => {
+    if (status === 'Ready' || type === 'success') return '✅';
+    if (status === 'Collected') return '📦';
+    if (status === 'Printing') return '🖨️';
+    if (status === 'Processing') return '⚙️';
+    if (status === 'Received') return '📥';
+    if (type === 'warning') return '⚠️';
+    return '🔔';
   };
 
   return (
@@ -314,7 +376,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
                 <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
               </svg>
-              <span>Notifications</span>
+              <span>Notifications {unreadNotifCount > 0 ? `(${unreadNotifCount})` : ''}</span>
               {unreadNotifCount > 0 && (
                 <span className="sidebar-badge-count">{unreadNotifCount}</span>
               )}
@@ -403,32 +465,75 @@ export const StudentDashboard = ({ onNavigate }) => {
                 )}
               </button>
 
-              {/* Interactive Notification Dropdown */}
+              {/* Interactive Notification Dropdown (Step 9) */}
               {showNotificationsPanel && (
                 <div className="notification-dropdown-panel">
                   <div className="notif-dropdown-header">
-                    <span className="notif-header-title">Notifications</span>
-                    <button
-                      type="button"
-                      className="notif-mark-read"
-                      onClick={() => {
-                        const updated = printService.markNotificationsRead('student');
-                        setNotifications(updated);
-                      }}
-                    >
-                      Mark all as read
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <span className="notif-header-title">Notifications</span>
+                      {unreadNotifCount > 0 && (
+                        <span className="notif-header-badge">{unreadNotifCount} new</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {unreadNotifCount > 0 && (
+                        <button
+                          type="button"
+                          className="notif-mark-read"
+                          onClick={handleMarkAllAsRead}
+                          title="Mark all notifications as read"
+                        >
+                          Mark all as read
+                        </button>
+                      )}
+                      {notifications.length > 0 && (
+                        <button
+                          type="button"
+                          className="notif-clear-btn"
+                          onClick={handleClearNotifications}
+                          title="Clear all notifications"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
                   </div>
+
                   <div className="notif-items-list">
-                    {notifications.map((notif) => (
-                      <div key={notif.id} className={`notif-item ${notif.isUnread ? 'unread' : ''}`}>
-                        <div className="notif-item-top">
-                          <span className="notif-item-title">{notif.title}</span>
-                          <span className="notif-item-time">{notif.time}</span>
-                        </div>
-                        <p className="notif-item-message">{notif.message}</p>
-                      </div>
-                    ))}
+                    {notifications.length === 0 ? (
+                      <div className="notif-empty-state">No new notifications.</div>
+                    ) : (
+                      notifications.map((notif) => {
+                        const isUnread = !notif.read && notif.isUnread !== false;
+                        return (
+                          <div key={notif.id} className={`notif-item ${isUnread ? 'unread' : ''}`}>
+                            <div className="notif-item-layout">
+                              <div className="notif-item-icon-circle">
+                                {getNotifIcon(notif.type, notif.status)}
+                              </div>
+                              <div className="notif-item-content">
+                                <div className="notif-item-top">
+                                  <span className="notif-item-title">{notif.title}</span>
+                                  <span className="notif-item-time">{notif.time}</span>
+                                </div>
+                                <p className="notif-item-message">{notif.message}</p>
+                                {isUnread && (
+                                  <div className="notif-item-actions">
+                                    <button
+                                      type="button"
+                                      className="notif-item-mark-btn"
+                                      onClick={(e) => handleMarkSingleAsRead(e, notif.id)}
+                                    >
+                                      Mark as Read
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
               )}
@@ -461,6 +566,26 @@ export const StudentDashboard = ({ onNavigate }) => {
               type="button"
               className="success-banner-close"
               onClick={() => setSubmissionSuccess(null)}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Server Notification / Connection Banner if backend unavailable */}
+        {serverError && (
+          <div className="submission-success-banner" style={{ borderColor: 'var(--color-warning, #f59e0b)', background: 'rgba(245, 158, 11, 0.1)' }}>
+            <div className="success-banner-content">
+              <div className="success-banner-icon" style={{ color: 'var(--color-warning, #f59e0b)' }}>⚠️</div>
+              <div>
+                <strong>SmartPrint AI Server Notice</strong>
+                <p>{serverError}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="success-banner-close"
+              onClick={() => setServerError(null)}
             >
               ✕
             </button>
@@ -530,74 +655,147 @@ export const StudentDashboard = ({ onNavigate }) => {
           </section>
 
           {/* =========================================================================
-              4. CURRENT PRINT JOB (LARGE CARD WITH PROGRESS TRACK)
+              4. CURRENT PRINT JOB (LARGE CARD WITH PROGRESS TRACK & SMART PREDICTION)
               ========================================================================= */}
           <section className="current-print-job-section">
-            <Card
-              title="Current Print Job"
-              subtitle="Live production pipeline and real-time status monitoring"
-              badge={<StatusBadge status={getStatusBadgeVariant(currentJob.status)} labelOverride={currentJob.status} />}
-              headerAction={
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setSelectedJobForModal(currentJob)}
-                >
-                  View Details
-                </Button>
-              }
-            >
-              <div className="current-job-body">
-                <div className="current-job-meta-row">
-                  <div className="job-file-identity">
-                    <div className="job-file-icon">📄</div>
-                    <div>
-                      <div className="job-file-name">{currentJob.documentName}</div>
-                      <div className="job-file-subtext">
-                        {currentJob.pageCount} pages • {currentJob.copies} {currentJob.copies > 1 ? 'copies' : 'copy'} • {currentJob.colorMode} • {currentJob.paperSize}
+            {currentJob ? (
+              <Card
+                title="Current Print Job"
+                subtitle="Live production pipeline and real-time queue prediction"
+                badge={<StatusBadge status={getStatusBadgeVariant(currentJob.status)} labelOverride={currentJob.status} />}
+                headerAction={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedJobForModal(currentJob)}
+                  >
+                    View Details
+                  </Button>
+                }
+              >
+                <div className="current-job-body">
+                  <div className="current-job-meta-row">
+                    <div className="job-file-identity">
+                      <div className="job-file-icon">📄</div>
+                      <div>
+                        <div className="job-file-name">{currentJob.documentName}</div>
+                        <div className="job-file-subtext">
+                          {currentJob.pageCount} pages • {currentJob.copies} {currentJob.copies > 1 ? 'copies' : 'copy'} • {currentJob.colorMode} • {currentJob.paperSize}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
+                      {/* Queue Position Pill */}
+                      {currentJob.status !== 'Ready' && currentJob.status !== 'Collected' && currentJob.status !== 'Completed' && (
+                        <div className="current-job-queue-pill">
+                          <span className="queue-pill-label">Queue Position:</span>
+                          <strong className="queue-pill-number">#{currentJob.queuePosition || 1}</strong>
+                        </div>
+                      )}
+
+                      {/* Estimated Waiting Time Pill */}
+                      <div className="current-job-wait-pill">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="10"></circle>
+                          <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                        <span>
+                          Estimated Wait: <strong>{currentJob.estimatedWaitTime}</strong>
+                        </span>
                       </div>
                     </div>
                   </div>
 
-                  <div className="current-job-wait-pill">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <polyline points="12 6 12 12 16 14"></polyline>
-                    </svg>
-                    <span>Estimated waiting time: <strong>{currentJob.estimatedWaitTime}</strong></span>
-                  </div>
-                </div>
+                  {/* AI-READY DESIGN: Smart Prediction Card (Step 6 & Step 7) */}
+                  <div className="smart-prediction-card">
+                    <div className="smart-prediction-header">
+                      <div className="smart-prediction-title-row">
+                        <span className="smart-prediction-badge">✨ Smart Prediction</span>
+                        <span className="smart-prediction-badge" style={{ backgroundColor: '#f0fdf4', color: '#166534', borderColor: '#bbf7d0', fontSize: '0.7rem' }}>
+                          🤖 AI-Assisted Queue Analysis
+                        </span>
+                        <span className="smart-prediction-sub">
+                          Estimated using current queue and print workload • Queue analyzed automatically
+                        </span>
+                      </div>
+                      <span className="smart-prediction-chip">
+                        Status: <strong>{currentJob.status}</strong>
+                      </span>
+                    </div>
 
-                {/* Visual Progress Indicator:
-                    Received → Processing → Printing → Ready → Collected */}
-                <div className="progress-tracker-container">
-                  <div className="progress-tracker-bar">
-                    {progressStages.map((stage, idx) => {
-                      const isCompleted = idx < currentJob.stageIndex;
-                      const isCurrent = idx === currentJob.stageIndex;
-
-                      return (
-                        <div
-                          key={stage}
-                          className={`progress-step-node ${isCurrent ? 'active' : ''} ${isCompleted ? 'completed' : ''}`}
-                        >
-                          <div className="step-circle">
-                            {isCompleted ? (
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                                <polyline points="20 6 9 17 4 12"></polyline>
-                              </svg>
-                            ) : (
-                              <span>{idx + 1}</span>
-                            )}
-                          </div>
-                          <span className="step-label">{stage}</span>
+                    <div className="smart-prediction-metrics-grid">
+                      <div className="smart-prediction-metric-item">
+                        <span className="metric-label">Queue Position</span>
+                        <div className="metric-value">
+                          {currentJob.status === 'Ready' 
+                            ? 'Ready at Desk' 
+                            : (currentJob.status === 'Collected' || currentJob.status === 'Completed' ? 'Fulfilled' : `#${currentJob.queuePosition || 1}`)}
                         </div>
-                      );
-                    })}
+                        <span className="metric-hint">
+                          {currentJob.status === 'Printing' 
+                            ? 'Actively on workstation' 
+                            : (currentJob.status === 'Processing' ? 'Next in workstation queue' : 'Awaiting printer assignment')}
+                        </span>
+                      </div>
+
+                      <div className="smart-prediction-metric-item">
+                        <span className="metric-label">Estimated Waiting Time</span>
+                        <div className="metric-value" style={{ color: 'var(--accent-primary)' }}>
+                          {currentJob.estimatedWaitTime}
+                        </div>
+                        <span className="metric-hint">
+                          Calculated from {currentJob.copies} {currentJob.copies > 1 ? 'copies' : 'copy'} & active shop load
+                        </span>
+                      </div>
+
+                      <div className="smart-prediction-metric-item">
+                        <span className="metric-label">Queue Analytics</span>
+                        <div className="metric-value" style={{ fontSize: '0.95rem' }}>
+                          Analyzed Automatically
+                        </div>
+                        <span className="metric-hint">Assigned: {currentJob.assignedPrinter || 'Pending Allocation'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Visual Progress Indicator:
+                      Received → Processing → Printing → Ready → Collected */}
+                  <div className="progress-tracker-container">
+                    <div className="progress-tracker-bar">
+                      {progressStages.map((stage, idx) => {
+                        const isCompleted = idx < currentJob.stageIndex;
+                        const isCurrent = idx === currentJob.stageIndex;
+
+                        return (
+                          <div
+                            key={stage}
+                            className={`progress-step-node ${isCurrent ? 'active' : ''} ${isCompleted ? 'completed' : ''}`}
+                          >
+                            <div className="step-circle">
+                              {isCompleted ? (
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                                  <polyline points="20 6 9 17 4 12"></polyline>
+                                </svg>
+                              ) : (
+                                <span>{idx + 1}</span>
+                              )}
+                            </div>
+                            <span className="step-label">{stage}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
-              </div>
-            </Card>
+              </Card>
+            ) : (
+              <Card title="Current Print Job" subtitle="No active print jobs">
+                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                  You currently have no active print orders. Start a new print request below!
+                </div>
+              </Card>
+            )}
           </section>
 
           {/* TWO COLUMN WORKSPACE: New Print Request & AI Assistant */}
@@ -785,8 +983,9 @@ export const StudentDashboard = ({ onNavigate }) => {
                       variant="primary"
                       type="submit"
                       size="md"
+                      disabled={isSubmitting}
                     >
-                      Submit Print Request
+                      {isSubmitting ? 'Submitting Print Request...' : 'Submit Print Request'}
                     </Button>
                   </div>
                 </form>
@@ -794,12 +993,22 @@ export const StudentDashboard = ({ onNavigate }) => {
             </div>
 
             {/* =========================================================================
-                7. AI ASSISTANT (CHAT-STYLE CARD)
+                7. AI ASSISTANT (CHAT-STYLE CARD - STEP 8)
                 ========================================================================= */}
             <div className="column-right">
               <Card
-                title="SmartPrint AI Assistant 🤖"
-                subtitle="Ask me about your print jobs."
+                title="SmartPrint AI Assistant"
+                subtitle="Ask me about your print jobs, queue and waiting time."
+                headerAction={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleClearChat}
+                    title="Clear chat history"
+                  >
+                    Clear Chat
+                  </Button>
+                }
               >
                 <div className="ai-chat-card-inner">
                   {/* Messages Area */}
@@ -812,7 +1021,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                         {msg.sender === 'ai' && (
                           <div className="chat-avatar-bot">🤖</div>
                         )}
-                        <div className="chat-bubble-text">
+                        <div className="chat-bubble-text" style={{ whiteSpace: 'pre-line' }}>
                           {msg.text}
                         </div>
                       </div>
@@ -828,32 +1037,46 @@ export const StudentDashboard = ({ onNavigate }) => {
                     )}
                   </div>
 
-                  {/* Quick Prompts */}
+                  {/* Clickable Quick Questions (Step 8) */}
                   <div className="chat-prompt-suggestions">
                     <button
                       type="button"
                       className="prompt-chip"
-                      onClick={() => handleSendQuery('Is my project report ready?')}
+                      onClick={() => handleSendQuery('Where is my print?')}
                     >
-                      “Is my report ready?”
+                      Where is my print?
                     </button>
                     <button
                       type="button"
                       className="prompt-chip"
-                      onClick={() => handleSendQuery('What is my wait time?')}
+                      onClick={() => handleSendQuery('Estimated wait?')}
                     >
-                      “What is my wait time?”
+                      Estimated wait?
                     </button>
                     <button
                       type="button"
                       className="prompt-chip"
-                      onClick={() => handleSendQuery('What is my pickup PIN?')}
+                      onClick={() => handleSendQuery('Queue position?')}
                     >
-                      “What is my pickup PIN?”
+                      Queue position?
+                    </button>
+                    <button
+                      type="button"
+                      className="prompt-chip"
+                      onClick={() => handleSendQuery('Is my print ready?')}
+                    >
+                      Is my print ready?
+                    </button>
+                    <button
+                      type="button"
+                      className="prompt-chip"
+                      onClick={() => handleSendQuery('My print jobs')}
+                    >
+                      My print jobs
                     </button>
                   </div>
 
-                  {/* Input Form */}
+                  {/* Input Form with Enter Key & Send Button */}
                   <form
                     onSubmit={(e) => { e.preventDefault(); handleSendQuery(); }}
                     className="chat-input-form"
@@ -861,7 +1084,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                     <input
                       type="text"
                       className="form-input chat-input-field"
-                      placeholder="Ask about your print..."
+                      placeholder="Ask about your print jobs, queue, waiting time..."
                       value={inputQuestion}
                       onChange={(e) => setInputQuestion(e.target.value)}
                     />
@@ -892,7 +1115,8 @@ export const StudentDashboard = ({ onNavigate }) => {
                   <thead>
                     <tr>
                       <th>File Name</th>
-                      <th>Date</th>
+                      <th>Queue Pos</th>
+                      <th>Est. Wait</th>
                       <th>Copies</th>
                       <th>Status</th>
                       <th>Action</th>
@@ -900,15 +1124,30 @@ export const StudentDashboard = ({ onNavigate }) => {
                   </thead>
                   <tbody>
                     {jobsList.map((job) => (
-                      <tr key={job.id} className={currentJob.id === job.id ? 'current-active-row' : ''}>
+                      <tr key={job.id} className={currentJob && currentJob.id === job.id ? 'current-active-row' : ''}>
                         <td>
                           <div style={{ fontWeight: 600 }}>{job.documentName}</div>
                           <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                             ID: {job.id} • {job.colorMode} • {job.paperSize}
                           </div>
                         </td>
-                        <td>{job.date}</td>
-                        <td>{job.copies}</td>
+                        <td>
+                          {job.status !== 'Ready' && job.status !== 'Collected' && job.status !== 'Completed' ? (
+                            <span style={{ fontWeight: 700, color: 'var(--accent-primary)', fontFamily: 'monospace' }}>
+                              #{job.queuePosition || 1}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
+                        </td>
+                        <td>
+                          <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>
+                            {job.estimatedWaitTime}
+                          </span>
+                        </td>
+                        <td>
+                          <span>{job.copies} {job.copies > 1 ? 'copies' : 'copy'}</span>
+                        </td>
                         <td>
                           <StatusBadge
                             status={getStatusBadgeVariant(job.status)}
@@ -919,14 +1158,14 @@ export const StudentDashboard = ({ onNavigate }) => {
                           <div className="flex gap-2 items-center">
                             {job.status !== 'Collected' && (
                               <Button
-                                variant={currentJob.id === job.id ? 'primary' : 'outline'}
+                                variant={currentJob && currentJob.id === job.id ? 'primary' : 'outline'}
                                 size="sm"
                                 onClick={() => {
                                   setCurrentJob(job);
                                   window.scrollTo({ top: 120, behavior: 'smooth' });
                                 }}
                               >
-                                {currentJob.id === job.id ? 'Tracking' : 'Track'}
+                                {currentJob && currentJob.id === job.id ? 'Tracking' : 'Track'}
                               </Button>
                             )}
                             <Button
@@ -947,42 +1186,75 @@ export const StudentDashboard = ({ onNavigate }) => {
           </section>
 
           {/* =========================================================================
-              8. NOTIFICATION PANEL SECTION (FULL VIEW)
+              8. NOTIFICATION PANEL SECTION (FULL VIEW - STEP 9)
               ========================================================================= */}
           {activeMenu === 'notifications' && (
             <section className="notifications-full-section">
               <Card
                 title="Notifications"
                 subtitle="Recent alerts and order updates"
+                badge={unreadNotifCount > 0 ? <span className="notif-header-badge">{unreadNotifCount} unread</span> : null}
                 headerAction={
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const updated = printService.markNotificationsRead('student');
-                      setNotifications(updated);
-                    }}
-                  >
-                    Mark all as read
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {unreadNotifCount > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleMarkAllAsRead}
+                        title="Mark all notifications as read"
+                      >
+                        Mark All as Read
+                      </Button>
+                    )}
+                    {notifications.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleClearNotifications}
+                        title="Clear all notifications"
+                      >
+                        Clear Notifications
+                      </Button>
+                    )}
+                  </div>
                 }
               >
                 <div className="notif-items-list-large">
-                  {notifications.map((n) => (
-                    <div key={n.id} className="notif-card-row">
-                      <div className="notif-icon-circle">🔔</div>
-                      <div style={{ flex: 1 }}>
-                        <div className="flex justify-between items-center">
-                          <strong>{n.title}</strong>
-                          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>{n.time}</span>
+                  {notifications.length === 0 ? (
+                    <div className="notif-empty-state-large">No new notifications.</div>
+                  ) : (
+                    notifications.map((n) => {
+                      const isUnread = !n.read && n.isUnread !== false;
+                      return (
+                        <div key={n.id} className={`notif-card-row ${isUnread ? 'unread' : ''}`}>
+                          <div className="notif-icon-circle">{getNotifIcon(n.type, n.status)}</div>
+                          <div style={{ flex: 1 }}>
+                            <div className="flex justify-between items-center">
+                              <strong style={{ color: isUnread ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+                                {n.title}
+                              </strong>
+                              <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>{n.time}</span>
+                            </div>
+                            <p style={{ margin: '0.25rem 0 0.5rem 0', fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
+                              {n.message}
+                            </p>
+                            {isUnread && (
+                              <button
+                                type="button"
+                                className="notif-item-mark-btn"
+                                onClick={(e) => handleMarkSingleAsRead(e, n.id)}
+                              >
+                                Mark as Read
+                              </button>
+                            )}
+                          </div>
+                          {n.status && (
+                            <StatusBadge status={getStatusBadgeVariant(n.status)} labelOverride={n.status} />
+                          )}
                         </div>
-                        <p style={{ margin: '0.25rem 0 0 0', fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)' }}>
-                          {n.message}
-                        </p>
-                      </div>
-                      <StatusBadge status={getStatusBadgeVariant(n.status)} labelOverride={n.status} />
-                    </div>
-                  ))}
+                      );
+                    })
+                  )}
                 </div>
               </Card>
             </section>
@@ -1017,10 +1289,28 @@ export const StudentDashboard = ({ onNavigate }) => {
                 <span className="modal-pin-hint">Show this code to the operator at the Xerox counter</span>
               </div>
 
+              {/* Smart Prediction Notice */}
+              <div className="modal-smart-prediction-banner">
+                <span className="smart-prediction-badge" style={{ fontSize: '0.72rem' }}>✨ Smart Prediction</span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginLeft: '0.5rem' }}>
+                  Estimated using current queue and print workload.
+                </span>
+              </div>
+
               <div className="modal-specs-grid">
                 <div className="spec-row">
                   <span className="spec-label">Current Status:</span>
                   <StatusBadge status={getStatusBadgeVariant(selectedJobForModal.status)} labelOverride={selectedJobForModal.status} />
+                </div>
+                <div className="spec-row">
+                  <span className="spec-label">Queue Position:</span>
+                  <span>
+                    <strong>
+                      {selectedJobForModal.status !== 'Ready' && selectedJobForModal.status !== 'Collected' && selectedJobForModal.status !== 'Completed'
+                        ? `#${selectedJobForModal.queuePosition || 1}`
+                        : '—'}
+                    </strong>
+                  </span>
                 </div>
                 <div className="spec-row">
                   <span className="spec-label">Estimated Wait:</span>
@@ -1028,7 +1318,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                 </div>
                 <div className="spec-row">
                   <span className="spec-label">Pages & Copies:</span>
-                  <span>{selectedJobForModal.pageCount} pages × {selectedJobForModal.copies} copies</span>
+                  <span>{selectedJobForModal.pageCount || selectedJobForModal.pages} pages × {selectedJobForModal.copies} copies</span>
                 </div>
                 <div className="spec-row">
                   <span className="spec-label">Print Specification:</span>
@@ -1036,7 +1326,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                 </div>
                 <div className="spec-row">
                   <span className="spec-label">Assigned Workstation:</span>
-                  <span>{selectedJobForModal.assignedPrinter}</span>
+                  <span>{selectedJobForModal.assignedPrinter || 'Pending Allocation'}</span>
                 </div>
                 <div className="spec-row">
                   <span className="spec-label">Total Amount:</span>

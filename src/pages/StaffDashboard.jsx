@@ -25,22 +25,47 @@ export const StaffDashboard = ({ onNavigate }) => {
   const [completedJobs, setCompletedJobs] = useState(() => printService.getCompletedJobs());
   const [notifications, setNotifications] = useState(() => printService.getNotifications('staff'));
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState(false);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
 
   // Synchronize with printService on mount and subscribe to real-time updates
   useEffect(() => {
+    let isMounted = true;
+
     const syncData = () => {
+      if (!isMounted) return;
       setQueueJobs(printService.getPrintJobs());
       setCompletedJobs(printService.getCompletedJobs());
       setNotifications(printService.getNotifications('staff'));
     };
 
+    // 1. Initial cached render
     syncData();
+
+    // 2. Fetch fresh queue from backend
+    printService.fetchPrintJobs().then(() => {
+      if (isMounted) syncData();
+    }).catch(err => {
+      console.warn('Backend fetch for staff queue failed, using cached:', err.message);
+    });
+
+    // 3. Subscribe to state updates
     const unsubscribe = printService.subscribe(syncData);
-    return () => unsubscribe();
+
+    // 4. Lightweight polling every 6 seconds with clean up on unmount
+    const pollInterval = setInterval(() => {
+      printService.fetchPrintJobs().catch(() => {});
+    }, 6000);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      clearInterval(pollInterval);
+    };
   }, []);
 
   // Filters & Search
   const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'Received' | 'Processing' | 'Printing' | 'Ready'
+  const [priorityFilter, setPriorityFilter] = useState('all'); // 'all' | 'High' | 'Medium' | 'Normal'
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modals & Interactive Overlays
@@ -50,6 +75,10 @@ export const StaffDashboard = ({ onNavigate }) => {
 
   // Available status stages for progression
   const statusOptions = ['Received', 'Processing', 'Printing', 'Ready', 'Collected'];
+
+  // STEP 7: AI-Ready Queue Analysis & Smart Job Prioritization
+  const queueAnalysis = printService.analyzeQueue(queueJobs);
+  const prioritizedJobs = printService.getPrioritizedQueue(queueJobs);
 
   // Calculate live dynamic counts
   const pendingCount = queueJobs.filter(j => j.status === 'Received' || j.status === 'Processing').length;
@@ -86,53 +115,63 @@ export const StaffDashboard = ({ onNavigate }) => {
   };
 
   // 1. Process Action (Received -> Processing) via printService
-  const handleProcessJob = (jobId) => {
-    const updated = printService.updatePrintJobStatus(jobId, 'Processing');
-    if (updated) {
-      showToast(`✓ "${updated.fileName || updated.documentName}" marked as Processing`);
+  const handleProcessJob = async (jobId) => {
+    setIsUpdatingStatus(true);
+    try {
+      const updated = await printService.updatePrintJobStatus(jobId, 'Processing');
+      if (updated) {
+        showToast(`Status updated to Processing. Student notification created.`);
+      }
+    } catch (err) {
+      showToast(`Unable to update status: ${err.message}`);
+    } finally {
+      setIsUpdatingStatus(false);
     }
   };
 
   // 2. Status Update Action (Received -> Processing -> Printing -> Ready -> Collected) via printService
-  const handleUpdateStatus = (jobId, newStatus) => {
-    const updated = printService.updatePrintJobStatus(jobId, newStatus);
-    if (updated) {
-      if (newStatus === 'Collected') {
-        showToast(`🎉 "${updated.fileName || updated.documentName}" marked as Collected and moved to Completed Jobs!`);
-      } else {
-        showToast(`✓ "${updated.fileName || updated.documentName}" status changed to ${newStatus}`);
+  const handleUpdateStatus = async (jobId, newStatus) => {
+    setIsUpdatingStatus(true);
+    try {
+      const updated = await printService.updatePrintJobStatus(jobId, newStatus);
+      if (updated) {
+        showToast(`Status updated to ${newStatus}. Student notification created.`);
       }
-    }
 
-    // Close modals
-    setSelectedJobForStatusUpdate(null);
-    if (selectedJobForDetails && selectedJobForDetails.id === jobId) {
-      if (newStatus === 'Collected') {
-        setSelectedJobForDetails(null);
-      } else {
-        setSelectedJobForDetails(prev => ({
-          ...prev,
-          status: newStatus,
-          estimatedWaitTime: newStatus === 'Ready' ? 'Ready for Pickup' : prev.estimatedWaitTime
-        }));
+      // Close modals
+      setSelectedJobForStatusUpdate(null);
+      if (selectedJobForDetails && selectedJobForDetails.id === jobId) {
+        if (newStatus === 'Collected') {
+          setSelectedJobForDetails(null);
+        } else {
+          setSelectedJobForDetails(prev => ({
+            ...prev,
+            status: newStatus,
+            estimatedWaitTime: newStatus === 'Ready' ? 'Ready for Pickup' : prev.estimatedWaitTime
+          }));
+        }
       }
+    } catch (err) {
+      showToast(`Unable to update status: ${err.message}`);
+    } finally {
+      setIsUpdatingStatus(false);
     }
   };
 
   // 3. Quick Next Step Action
-  const handleQuickNextStage = (job) => {
+  const handleQuickNextStage = async (job) => {
     switch (job.status) {
       case 'Received':
-        handleProcessJob(job.id);
+        await handleProcessJob(job.id);
         break;
       case 'Processing':
-        handleUpdateStatus(job.id, 'Printing');
+        await handleUpdateStatus(job.id, 'Printing');
         break;
       case 'Printing':
-        handleUpdateStatus(job.id, 'Ready');
+        await handleUpdateStatus(job.id, 'Ready');
         break;
       case 'Ready':
-        handleUpdateStatus(job.id, 'Collected');
+        await handleUpdateStatus(job.id, 'Collected');
         break;
       default:
         break;
@@ -495,7 +534,7 @@ export const StaffDashboard = ({ onNavigate }) => {
                 badge={
                   <span className="status-badge status-printing">
                     <span className="status-badge-dot" />
-                    <span>Live Throughput: ~{estimatedQueueMinutes} mins</span>
+                    <span>Live Workload: ~{estimatedQueueMinutes} mins</span>
                   </span>
                 }
               >
@@ -521,8 +560,21 @@ export const StaffDashboard = ({ onNavigate }) => {
                     </div>
                   </div>
 
+                  {/* AI-READY DESIGN: Smart Prediction Banner */}
+                  <div className="smart-prediction-card" style={{ marginTop: '1rem', marginBottom: '1rem' }}>
+                    <div className="smart-prediction-header">
+                      <div className="smart-prediction-title-row">
+                        <span className="smart-prediction-badge">✨ Smart Prediction</span>
+                        <span className="smart-prediction-sub">Estimated using current queue and print workload.</span>
+                      </div>
+                      <span className="smart-prediction-chip">
+                        Active Queue Load: <strong>{queueJobs.length} jobs</strong>
+                      </span>
+                    </div>
+                  </div>
+
                   {/* Simple Queue Multi-Stage Pipeline Visualization */}
-                  <div className="progress-tracker-container" style={{ marginTop: '1.25rem' }}>
+                  <div className="progress-tracker-container" style={{ marginTop: '0.5rem' }}>
                     <div className="progress-tracker-bar">
                       <div className={`progress-step-node ${pendingCount > 0 ? 'active' : 'completed'}`}>
                         <div className="step-circle">1</div>
@@ -583,13 +635,80 @@ export const StaffDashboard = ({ onNavigate }) => {
           )}
 
           {/* =========================================================================
+              STEP 7: AI QUEUE INSIGHTS CARD
+              ========================================================================= */}
+          {(activeTab === 'dashboard' || activeTab === 'queue' || activeTab === 'active') && (
+            <section className="ai-queue-insights-section" style={{ marginTop: '1.5rem' }}>
+              <Card
+                title="AI Queue Insights"
+                subtitle="Automated workload analysis, congestion prediction, and operator recommendations"
+                badge={
+                  <span className="smart-prediction-badge">
+                    ✨ AI-Assisted Queue Analysis
+                  </span>
+                }
+              >
+                <div className="insights-card-body">
+                  <div className="insights-metrics-grid">
+                    <div className="insight-metric-box">
+                      <span className="insight-metric-label">Active Jobs</span>
+                      <div className="insight-metric-value">{queueAnalysis.totalActiveJobs}</div>
+                      <span className="insight-metric-sub">{queueAnalysis.pendingJobs} waiting • {queueAnalysis.printingJobs} printing</span>
+                    </div>
+
+                    <div className="insight-metric-box">
+                      <span className="insight-metric-label">Total Copies</span>
+                      <div className="insight-metric-value">{queueAnalysis.totalCopies}</div>
+                      <span className="insight-metric-sub">{queueAnalysis.totalPages} estimated sheets</span>
+                    </div>
+
+                    <div className="insight-metric-box">
+                      <span className="insight-metric-label">Current Workload</span>
+                      <div className="insight-metric-value">
+                        <span className={`workload-pill workload-${queueAnalysis.currentWorkload.toLowerCase()}`}>
+                          {queueAnalysis.currentWorkload}
+                        </span>
+                      </div>
+                      <span className="insight-metric-sub">Shop processing speed</span>
+                    </div>
+
+                    <div className="insight-metric-box">
+                      <span className="insight-metric-label">Average Estimated Wait</span>
+                      <div className="insight-metric-value" style={{ color: 'var(--accent-primary)' }}>
+                        {queueAnalysis.averageWaitingTime}
+                      </div>
+                      <span className="insight-metric-sub">Per incoming print job</span>
+                    </div>
+                  </div>
+
+                  {/* Dynamic Insights Bullet List */}
+                  <div className="dynamic-insights-container">
+                    <div className="insights-subhead">
+                      <span>💡 Dynamic Queue Intelligence & Alerts:</span>
+                      <span className="insights-subhead-tag">Live Generated</span>
+                    </div>
+                    <ul className="dynamic-insights-list">
+                      {queueAnalysis.insights.map((insight, idx) => (
+                        <li key={idx} className="dynamic-insight-item">
+                          <span className="insight-bullet-icon">⚡</span>
+                          <span>{insight}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </Card>
+            </section>
+          )}
+
+          {/* =========================================================================
               4. MAIN PRINT QUEUE TABLE ("CURRENT PRINT QUEUE")
               ========================================================================= */}
           {(activeTab === 'dashboard' || activeTab === 'queue' || activeTab === 'active') && (
             <section className="my-print-jobs-section">
               <Card
                 title="Current Print Queue"
-                subtitle="Live submissions awaiting processing, printing, or student pickup"
+                subtitle="Live submissions awaiting processing, printing, or student pickup with smart wait estimation"
                 headerAction={
                   <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
                     <input
@@ -647,7 +766,8 @@ export const StaffDashboard = ({ onNavigate }) => {
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <th>Queue No</th>
+                        <th>Queue & Position</th>
+                        <th>Est. Wait</th>
                         <th>Student</th>
                         <th>File Name</th>
                         <th>Copies</th>
@@ -659,20 +779,55 @@ export const StaffDashboard = ({ onNavigate }) => {
                     <tbody>
                       {filteredQueueJobs.length === 0 ? (
                         <tr>
-                          <td colSpan="7" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                          <td colSpan="8" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
                             No print requests currently match your filters or search.
                           </td>
                         </tr>
                       ) : (
                         filteredQueueJobs.map((job) => (
                           <tr key={job.id}>
-                            {/* Queue No */}
+                            {/* Queue Position & No */}
                             <td>
-                              <span style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-primary)' }}>
-                                {job.queueNo}
-                              </span>
-                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                              <div className="flex items-center gap-1.5">
+                                {job.status !== 'Ready' && job.status !== 'Collected' && job.status !== 'Completed' ? (
+                                  <span
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      padding: '0.15rem 0.45rem',
+                                      borderRadius: 'var(--radius-sm)',
+                                      fontSize: '0.78rem',
+                                      fontWeight: 800,
+                                      backgroundColor: 'var(--bg-surface-secondary)',
+                                      color: 'var(--accent-primary)',
+                                      border: '1px solid var(--border-light)',
+                                      fontFamily: 'monospace'
+                                    }}
+                                  >
+                                    #{job.queuePosition || 1}
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>—</span>
+                                )}
+                                <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                  {job.queueNo}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                                 ID: {job.id}
+                              </div>
+                            </td>
+
+                            {/* Estimated Waiting Time */}
+                            <td>
+                              <div style={{ fontWeight: 700, fontSize: '0.85rem', color: job.status === 'Ready' ? '#166534' : 'var(--text-primary)' }}>
+                                {job.status !== 'Ready' && job.status !== 'Collected' && job.status !== 'Completed'
+                                  ? `#${job.queuePosition || 1} — ${job.estimatedWaitTime}`
+                                  : job.estimatedWaitTime}
+                              </div>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                {job.status === 'Printing' ? 'Printing live' : (job.status === 'Ready' ? 'Pickup ready' : 'Queue wait')}
                               </div>
                             </td>
 
@@ -790,6 +945,170 @@ export const StaffDashboard = ({ onNavigate }) => {
                             </td>
                           </tr>
                         ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </section>
+          )}
+
+          {/* =========================================================================
+              STEP 7: SMART JOB PRIORITY TABLE SECTION
+              ========================================================================= */}
+          {(activeTab === 'dashboard' || activeTab === 'queue' || activeTab === 'active') && (
+            <section className="smart-job-priority-section" style={{ marginTop: '2rem' }}>
+              <Card
+                title="Smart Job Priority"
+                subtitle="AI-recommended attention ranking to assist operator throughput without modifying queue order"
+                badge={
+                  <span className="smart-prediction-badge" style={{ backgroundColor: '#fef3c7', color: '#b45309', borderColor: '#fde68a' }}>
+                    🎯 Smart Priority
+                  </span>
+                }
+                headerAction={
+                  <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
+                    <Button
+                      size="sm"
+                      variant={priorityFilter === 'all' ? 'primary' : 'outline'}
+                      onClick={() => setPriorityFilter('all')}
+                    >
+                      All Active ({prioritizedJobs.length})
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={priorityFilter === 'High' ? 'primary' : 'outline'}
+                      onClick={() => setPriorityFilter('High')}
+                    >
+                      High ({prioritizedJobs.filter(j => j.priority === 'High').length})
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={priorityFilter === 'Medium' ? 'primary' : 'outline'}
+                      onClick={() => setPriorityFilter('Medium')}
+                    >
+                      Medium ({prioritizedJobs.filter(j => j.priority === 'Medium').length})
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={priorityFilter === 'Normal' ? 'primary' : 'outline'}
+                      onClick={() => setPriorityFilter('Normal')}
+                    >
+                      Normal ({prioritizedJobs.filter(j => j.priority === 'Normal').length})
+                    </Button>
+                  </div>
+                }
+              >
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Job ID</th>
+                        <th>Student</th>
+                        <th>File Name</th>
+                        <th>Copies</th>
+                        <th>Status</th>
+                        <th>Estimated Wait</th>
+                        <th>Priority</th>
+                        <th>Reason</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prioritizedJobs.filter(j => priorityFilter === 'all' ? true : j.priority === priorityFilter).length === 0 ? (
+                        <tr>
+                          <td colSpan="9" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                            No active print jobs match the selected priority filter ({priorityFilter}).
+                          </td>
+                        </tr>
+                      ) : (
+                        prioritizedJobs
+                          .filter(j => priorityFilter === 'all' ? true : j.priority === priorityFilter)
+                          .map((job) => (
+                            <tr key={job.id}>
+                              {/* Job ID */}
+                              <td>
+                                <span style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                                  {job.id}
+                                </span>
+                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                  {job.queueNo}
+                                </div>
+                              </td>
+
+                              {/* Student */}
+                              <td>
+                                <div style={{ fontWeight: 600 }}>{job.student}</div>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{job.studentId}</div>
+                              </td>
+
+                              {/* File Name */}
+                              <td>
+                                <div style={{ fontWeight: 600 }}>{job.fileName}</div>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                                  {job.pages} pages • {job.paperSize} {job.isDoubleSided ? '• Duplex' : ''}
+                                </div>
+                              </td>
+
+                              {/* Copies */}
+                              <td>
+                                <span style={{ fontWeight: 600 }}>{job.copies}</span>
+                                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                                  {job.copies > 1 ? 'copies' : 'copy'}
+                                </span>
+                              </td>
+
+                              {/* Status */}
+                              <td>
+                                <StatusBadge status={getBadgeVariant(job.status)} labelOverride={job.status} />
+                              </td>
+
+                              {/* Estimated Wait */}
+                              <td>
+                                <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>
+                                  {job.estimatedWaitTime}
+                                </span>
+                              </td>
+
+                              {/* Priority Level */}
+                              <td>
+                                <span className={`priority-pill priority-${job.priority.toLowerCase()}`}>
+                                  {job.priority}
+                                </span>
+                              </td>
+
+                              {/* Priority Reason */}
+                              <td>
+                                <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                                  {job.priorityReason || job.reason}
+                                </span>
+                              </td>
+
+                              {/* Action */}
+                              <td>
+                                <div className="flex gap-2 items-center">
+                                  {job.status === 'Received' && (
+                                    <Button variant="primary" size="sm" onClick={() => handleProcessJob(job.id)}>
+                                      ▶ Process
+                                    </Button>
+                                  )}
+                                  {job.status === 'Processing' && (
+                                    <Button variant="primary" size="sm" onClick={() => handleQuickNextStage(job)}>
+                                      🖨️ Print
+                                    </Button>
+                                  )}
+                                  {job.status === 'Printing' && (
+                                    <Button variant="secondary" size="sm" onClick={() => handleQuickNextStage(job)}>
+                                      ✓ Ready
+                                    </Button>
+                                  )}
+                                  <Button variant="ghost" size="sm" onClick={() => setSelectedJobForDetails(job)}>
+                                    Details
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
                       )}
                     </tbody>
                   </table>
@@ -1090,6 +1409,14 @@ export const StaffDashboard = ({ onNavigate }) => {
                 <span className="modal-pin-hint">Verify this PIN with student before releasing completed print</span>
               </div>
 
+              {/* Smart Prediction Notice */}
+              <div className="modal-smart-prediction-banner">
+                <span className="smart-prediction-badge" style={{ fontSize: '0.72rem' }}>✨ Smart Prediction</span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginLeft: '0.5rem' }}>
+                  Estimated using current queue and print workload.
+                </span>
+              </div>
+
               {/* Specs Grid */}
               <div className="modal-specs-grid">
                 <div className="spec-row">
@@ -1123,6 +1450,16 @@ export const StaffDashboard = ({ onNavigate }) => {
                 <div className="spec-row">
                   <span className="spec-label">Current Status:</span>
                   <StatusBadge status={getBadgeVariant(selectedJobForDetails.status)} labelOverride={selectedJobForDetails.status} />
+                </div>
+                <div className="spec-row">
+                  <span className="spec-label">Queue Position:</span>
+                  <span>
+                    <strong>
+                      {selectedJobForDetails.status !== 'Ready' && selectedJobForDetails.status !== 'Collected' && selectedJobForDetails.status !== 'Completed'
+                        ? `#${selectedJobForDetails.queuePosition || 1}`
+                        : '—'}
+                    </strong>
+                  </span>
                 </div>
                 <div className="spec-row">
                   <span className="spec-label">Estimated Waiting Time:</span>
