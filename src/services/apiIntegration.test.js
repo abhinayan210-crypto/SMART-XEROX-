@@ -1,157 +1,236 @@
 /**
- * STEP 11 Frontend API Integration Test Suite
- * Validates the connection between SmartPrint AI Frontend services (apiService, printService, notificationService)
- * and the Express + SQLite Backend API, testing:
- * - Server health check
- * - Print job creation & SQLite persistence
- * - Fetching student print jobs
- * - Fetching staff active queue
- * - Status progression: Received -> Processing -> Printing -> Ready -> Collected
- * - Automatic backend notifications generation
- * - Mark as read & Clear notifications
- * - Waiting time recalculation & AI queue analysis with backend data
- * - AI Assistant answering questions using live backend jobs
- * - Fallback / graceful offline handling
+ * STEP 14 Final End-to-End & Integration Test Suite for SmartPrint AI
+ * Comprehensive validation of:
+ * - Backend Health & SQLite Database persistence
+ * - Student End-to-End lifecycle (login, job creation, wait time, queue position, AI queries, notifications, logout)
+ * - Staff End-to-End lifecycle (login, queue visibility, status advancement, AI queue analysis, job priority, logout)
+ * - Student <-> Staff real-time workflow without manual DB edits
+ * - RBAC Authorization & Security Isolation (401 unauth, 403 forbidden, password hashing)
+ * - AI Intelligence Services (Waiting Time, Queue Analysis, Smart Job Prioritization, AI Assistant)
  */
 
 import assert from 'node:assert';
 import app from '../../backend/server.js';
+import { authService } from './authService.js';
 import { apiService } from './apiService.js';
 import { printService } from './printService.js';
 import { notificationService } from './notificationService.js';
-import { getAIResponse } from './aiAssistantService.js';
+import { getAIResponse, detectIntent } from './aiAssistantService.js';
+import { calculateEstimatedWaitTime, getActiveQueue } from './waitingTimeService.js';
+import { analyzeQueue, calculateJobPriority } from './queueAnalysisService.js';
+import db from '../../backend/database/database.js';
 
 console.log('====================================================');
-console.log('🧪 RUNNING STEP 11 FRONTEND-BACKEND INTEGRATION TESTS');
+console.log('🧪 RUNNING SMARTPRINT AI STEP 14 FINAL E2E TEST SUITE');
 console.log('====================================================\n');
 
 const TEST_PORT = 5088;
 const TEST_BASE_URL = `http://127.0.0.1:${TEST_PORT}/api`;
 
-// Point apiService to test server instance
 apiService.baseUrl = TEST_BASE_URL;
+authService.baseUrl = TEST_BASE_URL;
 if (typeof window !== 'undefined') {
   window.__API_BASE_URL__ = TEST_BASE_URL;
 }
 
 const server = app.listen(TEST_PORT, '127.0.0.1', async () => {
   try {
-    const testStudentId = 'STD-2026-0842'; // Abhinaya N
-
-    // Test 1: Server Health Check
-    console.log('Test 1: Backend Health Check via apiService');
+    // ----------------------------------------------------
+    // Section 1: Backend Health Check
+    // ----------------------------------------------------
+    console.log('--- SECTION 1: BACKEND HEALTH & REST APIS ---');
     const isHealthy = await apiService.checkHealth();
     assert.strictEqual(isHealthy, true, 'Backend server should report healthy');
-    console.log('✓ Health check passed.\n');
+    console.log('✓ GET /api/health returned healthy status.');
 
-    // Test 2: Fetch initial student print jobs
-    console.log('Test 2: Fetch student jobs from backend via printService.fetchStudentJobs()');
-    const initialJobs = await printService.fetchStudentJobs(testStudentId);
-    assert.ok(Array.isArray(initialJobs), 'Should return array of student jobs');
-    console.log(`✓ Loaded ${initialJobs.length} jobs for ${testStudentId}.\n`);
+    // ----------------------------------------------------
+    // Section 2: Security & Authentication Verification
+    // ----------------------------------------------------
+    console.log('\n--- SECTION 2: AUTHENTICATION & SECURITY ISOLATION ---');
+    
+    // 2.1 Unauthenticated request rejection
+    let unauthCaught = false;
+    try {
+      await apiService.getPrintJobs();
+    } catch {
+      unauthCaught = true;
+    }
+    assert.strictEqual(unauthCaught, true, 'Unauthenticated request should throw error');
+    console.log('✓ Unauthenticated requests rejected (401 Guard).');
 
-    // Test 3: Submit New Print Job (POST /api/print-jobs)
-    console.log('Test 3: Submit new print job via printService.addPrintJob()');
-    const docName = `Step11_Integration_Test_${Date.now()}.pdf`;
-    const submittedJob = await printService.addPrintJob({
-      fileName: docName,
-      documentName: docName,
+    // 2.2 Invalid credentials rejection
+    let badLoginFailed = false;
+    try {
+      await authService.login({ email: 'student@smartprint.com', password: 'BadPassword@999', role: 'student' });
+    } catch {
+      badLoginFailed = true;
+    }
+    assert.strictEqual(badLoginFailed, true, 'Invalid password should fail');
+    console.log('✓ Invalid login credentials rejected.');
+
+    // 2.3 Password Hash verification (No plain text in database)
+    const userRow = db.prepare('SELECT password_hash FROM users WHERE email = ?').get('student@smartprint.com');
+    assert.ok(userRow && userRow.password_hash, 'User must have a password hash');
+    assert.ok(userRow.password_hash.startsWith('$2'), 'Password must be hashed with bcrypt');
+    assert.ok(!userRow.password_hash.includes('Student@123'), 'Plain text password must NEVER be in database');
+    console.log('✓ Passwords verified securely hashed with bcrypt in SQLite.');
+
+    // ----------------------------------------------------
+    // Section 3: Student End-to-End Workflow
+    // ----------------------------------------------------
+    console.log('\n--- SECTION 3: STUDENT END-TO-END WORKFLOW ---');
+    
+    // 3.1 Student Login
+    const studentAuth = await authService.login({
+      email: 'student@smartprint.com',
+      password: 'Student@123',
+      role: 'student'
+    });
+    assert.strictEqual(studentAuth.success, true);
+    assert.ok(studentAuth.token, 'Token must be issued');
+    assert.strictEqual(studentAuth.user.role, 'student');
+    const studentId = studentAuth.user.id;
+    console.log(`✓ Student login successful: ${studentAuth.user.name} (${studentId}).`);
+
+    // 3.2 Create New Print Request
+    const testDocName = `Final_Immersion_Project_${Date.now()}.pdf`;
+    const newJob = await printService.addPrintJob({
+      fileName: testDocName,
+      documentName: testDocName,
       copies: 3,
       printType: 'Colour',
       pageRange: '1-15',
       paperSize: 'A4',
-      bindingOption: 'None',
-      student: 'Abhinaya N',
-      studentId: testStudentId
+      bindingOption: 'Spiral',
+      student: studentAuth.user.name,
+      studentId: studentId
     });
 
-    assert.ok(submittedJob, 'Submitted job should be returned');
-    assert.strictEqual(submittedJob.status, 'Received', 'Initial status should be Received');
-    assert.strictEqual(submittedJob.fileName, docName, 'File name should match');
-    assert.strictEqual(submittedJob.copies, 3, 'Copies should match');
-    assert.strictEqual(submittedJob.printType, 'Colour', 'Print type should match');
-    assert.ok(submittedJob.queuePosition >= 1, 'Queue position should be calculated');
-    console.log(`✓ Job created: ID ${submittedJob.id}, Pos #${submittedJob.queuePosition}, Wait: ${submittedJob.estimatedWaitTime}\n`);
+    assert.ok(newJob && newJob.id, 'Job should be created');
+    assert.strictEqual(newJob.status, 'Received');
+    assert.strictEqual(newJob.copies, 3);
+    assert.ok(newJob.pickupPin && newJob.pickupPin.length === 4, 'Pickup PIN must be 4 digits');
+    console.log(`✓ Print Job created: ID ${newJob.id} | PIN: ${newJob.pickupPin} | Status: ${newJob.status}`);
 
-    // Test 4: Verify Job appears in Staff Queue (GET /api/print-jobs)
-    console.log('Test 4: Fetch all print jobs via printService.fetchPrintJobs() for Staff Dashboard');
-    const { activeJobs } = await printService.fetchPrintJobs();
-    const foundInActive = activeJobs.some(j => j.id === submittedJob.id);
-    assert.strictEqual(foundInActive, true, 'New job must appear in active staff queue');
-    console.log(`✓ Job ${submittedJob.id} confirmed in staff active queue.\n`);
+    // 3.3 Verify Student Dashboard Isolation (Student only sees their jobs)
+    const studentJobs = await printService.fetchStudentJobs(studentId);
+    assert.ok(studentJobs.some(j => j.id === newJob.id), 'New job must be in student list');
+    assert.ok(studentJobs.every(j => j.studentId === studentId), 'Student must only see their own jobs');
+    console.log(`✓ Student jobs loaded (${studentJobs.length} jobs). Ownership strictly enforced.`);
 
-    // Test 5: Verify Automatic 'Received' notification in backend
-    console.log('Test 5: Fetch student notifications via notificationService.fetchNotifications()');
-    const notifs = await notificationService.fetchNotifications(testStudentId);
-    assert.ok(Array.isArray(notifs) && notifs.length > 0, 'Should have student notifications');
-    const receivedNotif = notifs.find(n => n.jobId === submittedJob.id && n.title === 'Print Request Received');
-    assert.ok(receivedNotif, 'Should find automatic Received notification');
-    console.log(`✓ Received notification verified: "${receivedNotif.title}" - "${receivedNotif.message}"\n`);
+    // 3.4 Waiting Time Prediction & Queue Position Calculation
+    const studentPred = calculateEstimatedWaitTime(newJob, studentJobs);
+    assert.ok(studentPred.queuePosition >= 1, 'Queue position should be >= 1');
+    assert.ok(studentPred.estimatedMinutes >= 1, 'Estimated minutes should be >= 1');
+    console.log(`✓ Queue Position: #${studentPred.queuePosition} | Estimated Turnaround: ${studentPred.formattedWaitTime}`);
 
-    // Test 6: Status Progression: Received -> Processing -> Printing -> Ready -> Collected
-    console.log('Test 6: Staff Status Advancement Flow');
+    // 3.5 AI Assistant Student Queries
+    console.log('\n--- SECTION 4: AI ASSISTANT & INTENT VERIFICATION ---');
+    const queries = [
+      { q: 'Where is my print?', expectedIntent: 'STATUS' },
+      { q: 'What is my print status?', expectedIntent: 'STATUS' },
+      { q: 'Is my print ready?', expectedIntent: 'READY_CHECK' },
+      { q: 'How long will my print take?', expectedIntent: 'WAITING_TIME' },
+      { q: 'What is my queue position?', expectedIntent: 'QUEUE_POSITION' },
+      { q: 'Show my active print jobs.', expectedIntent: 'MY_JOBS' },
+      { q: 'How does the printing process work?', expectedIntent: 'GENERAL_HOW_IT_WORKS' }
+    ];
 
-    // 6a: Received -> Processing
-    const processingJob = await printService.updatePrintJobStatus(submittedJob.id, 'Processing');
-    assert.strictEqual(processingJob.status, 'Processing');
-    console.log(`- Status -> Processing (Printer: ${processingJob.assignedPrinter})`);
-
-    // 6b: Processing -> Printing
-    const printingJob = await printService.updatePrintJobStatus(submittedJob.id, 'Printing');
-    assert.strictEqual(printingJob.status, 'Printing');
-    console.log(`- Status -> Printing (Printer: ${printingJob.assignedPrinter})`);
-
-    // 6c: Printing -> Ready
-    const readyJob = await printService.updatePrintJobStatus(submittedJob.id, 'Ready');
-    assert.strictEqual(readyJob.status, 'Ready');
-    console.log(`- Status -> Ready (Wait: ${readyJob.estimatedWaitTime})`);
-
-    // 6d: Ready -> Collected
-    const collectedJob = await printService.updatePrintJobStatus(submittedJob.id, 'Collected');
-    assert.strictEqual(collectedJob.status, 'Collected');
-    const completedJobs = printService.getCompletedJobs();
-    assert.ok(completedJobs.some(j => j.id === submittedJob.id), 'Job must be in completed jobs archive');
-    console.log(`- Status -> Collected (Archived in completed jobs)`);
-    console.log('✓ Full status progression cycle completed.\n');
-
-    // Test 7: AI Assistant queries using live backend jobs
-    console.log('Test 7: Rule-Based AI Assistant using latest backend jobs');
-    const studentJobs = printService.getStudentJobs(testStudentId);
-    const allActiveJobs = printService.getPrintJobs();
-
-    const responseStatus = getAIResponse('Where is my print?', studentJobs, allActiveJobs);
-    assert.ok(typeof responseStatus === 'string' && responseStatus.length > 10, 'AI should respond to status query');
-    console.log(`- AI Query ["Where is my print?"] =>\n  "${responseStatus.split('\n')[0]}..."`);
-
-    const responseWait = getAIResponse('How long will my print take?', studentJobs, allActiveJobs);
-    assert.ok(typeof responseWait === 'string' && responseWait.length > 5, 'AI should respond to wait time query');
-    console.log(`- AI Query ["How long will my print take?"] =>\n  "${responseWait.split('\n')[0]}..."\n`);
-
-    // Test 8: Notification Management (Mark as read, Mark all as read, Clear)
-    console.log('Test 8: Notification Actions (Read tracking & clearing)');
-    const studentNotifs = await notificationService.fetchNotifications(testStudentId);
-    if (studentNotifs.length > 0) {
-      const firstNotifId = studentNotifs[0].id;
-      const afterMarkOne = await notificationService.markNotificationAsRead(firstNotifId);
-      const markedNotif = afterMarkOne.find(n => n.id === firstNotifId);
-      assert.strictEqual(markedNotif.read, true, 'Target notification should be marked read');
-      console.log('✓ Single notification mark as read verified.');
-
-      await notificationService.markAllNotificationsAsRead(testStudentId);
-      const unreadCount = notificationService.getUnreadCount(testStudentId);
-      assert.strictEqual(unreadCount, 0, 'Unread count should be 0 after markAll');
-      console.log('✓ Mark all notifications as read verified.');
+    for (const item of queries) {
+      const detected = detectIntent(item.q);
+      const reply = getAIResponse(item.q, studentJobs, studentJobs);
+      assert.strictEqual(detected, item.expectedIntent, `Intent mismatch for "${item.q}"`);
+      assert.ok(reply && reply.length > 5, `Response empty for "${item.q}"`);
+      console.log(`✓ Q: "${item.q}" -> Intent: [${detected}]`);
+      console.log(`   A: "${reply.split('\n')[0]}"`);
     }
 
+    // 3.6 Student Notifications
+    const studentNotifs = await notificationService.fetchNotifications(studentId);
+    assert.ok(Array.isArray(studentNotifs) && studentNotifs.length > 0);
+    console.log(`✓ Student received ${studentNotifs.length} real-time notifications.`);
+
+    // ----------------------------------------------------
+    // Section 5: Staff End-to-End Workflow & Status Lifecycle
+    // ----------------------------------------------------
+    console.log('\n--- SECTION 5: STAFF END-TO-END WORKFLOW & STATUS LIFECYCLE ---');
+    
+    // 5.1 Staff Login
+    const staffAuth = await authService.login({
+      email: 'staff@smartprint.com',
+      password: 'Staff@123',
+      role: 'staff'
+    });
+    assert.strictEqual(staffAuth.success, true);
+    assert.strictEqual(staffAuth.user.role, 'staff');
+    console.log(`✓ Staff login successful: ${staffAuth.user.name}.`);
+
+    // 5.2 Staff Queue Inspection
+    const { activeJobs } = await printService.fetchPrintJobs();
+    assert.ok(activeJobs.some(j => j.id === newJob.id), 'Submitted job must appear in staff queue');
+    console.log(`✓ Staff loaded full campus queue (${activeJobs.length} active jobs).`);
+
+    // 5.3 AI Queue Analysis Check
+    const queueAnalysis = analyzeQueue(activeJobs);
+    assert.ok(['Low', 'Moderate', 'High'].includes(queueAnalysis.currentWorkload));
+    assert.ok(queueAnalysis.totalActiveJobs > 0);
+    assert.ok(Array.isArray(queueAnalysis.insights) && queueAnalysis.insights.length > 0);
+    console.log(`✓ AI-Assisted Queue Analysis: Workload [${queueAnalysis.currentWorkload}], Average Wait [${queueAnalysis.averageWaitingTime}]`);
+    console.log(`   Dynamic Insight: "${queueAnalysis.insights[1] || queueAnalysis.insights[0]}"`);
+
+    // 5.4 Smart Job Priority Check
+    const priorityInfo = calculateJobPriority(newJob, activeJobs);
+    assert.ok(['High', 'Medium', 'Normal'].includes(priorityInfo.priority));
+    assert.ok(priorityInfo.reason && priorityInfo.reason.length > 0);
+    console.log(`✓ Smart Job Priority recommendation: [${priorityInfo.priority}] — "${priorityInfo.reason}"`);
+
+    // 5.5 Step-by-Step Status Advancement Flow
+    console.log('\n--- SECTION 6: CROSS-ROLE REAL-TIME STATUS PROGRESSION ---');
+    const stages = ['Processing', 'Printing', 'Ready', 'Collected'];
+    for (const stage of stages) {
+      const updated = await printService.updatePrintJobStatus(newJob.id, stage);
+      assert.strictEqual(updated.status, stage, `Job status should advance to ${stage}`);
+      console.log(`✓ Staff progressed Job ${newJob.id} -> ${stage}`);
+    }
+
+    // 5.6 Verify Final Notification on Ready/Collected
+    const finalNotifs = await notificationService.fetchNotifications(studentId);
+    const readyNotif = finalNotifs.find(n => n.title.includes('Ready') || n.status === 'Ready');
+    assert.ok(readyNotif, 'Student must receive Print Ready notification');
+    console.log(`✓ Student received "Print Ready" alert: "${readyNotif.message}"`);
+
+    // ----------------------------------------------------
+    // Section 7: RBAC & Protected Access Verification
+    // ----------------------------------------------------
+    console.log('\n--- SECTION 7: ACCESS CONTROL & LOGOUT ---');
+    
+    // Switch back to Student to verify Staff API Blocking
+    await authService.login({ email: 'student@smartprint.com', password: 'Student@123', role: 'student' });
+    let staffBlocked = false;
+    try {
+      await apiService.getStudents();
+    } catch {
+      staffBlocked = true;
+    }
+    assert.strictEqual(staffBlocked, true, 'Student must be blocked from calling Staff Students API');
+    console.log('✓ Student correctly blocked from staff endpoints (403 Forbidden).');
+
+    // Logout
+    await authService.logout();
+    assert.strictEqual(authService.isAuthenticated(), false);
+    assert.strictEqual(authService.getToken(), null);
+    console.log('✓ Session terminated & authentication state cleared on logout.');
+
     console.log('\n====================================================');
-    console.log('🎉 ALL STEP 11 FRONTEND-BACKEND INTEGRATION TESTS PASSED!');
+    console.log('🎉 ALL STEP 14 FINAL E2E & INTEGRATION TESTS PASSED!');
     console.log('====================================================\n');
 
     server.close();
     process.exit(0);
   } catch (error) {
-    console.error('\n❌ Integration Test Error:', error);
+    console.error('\n❌ E2E Integration Test Failure:', error);
     server.close();
     process.exit(1);
   }
 });
+

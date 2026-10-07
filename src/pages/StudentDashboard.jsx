@@ -8,23 +8,28 @@ import {
 } from '../data/mockData';
 import { printService } from '../services/printService';
 import { getAIResponse } from '../services/aiAssistantService';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * Student Dashboard Component
  * Complete implementation for STEP 3 & STEP 5 of the AI-Powered Smart Print Tracking System.
  */
 export const StudentDashboard = ({ onNavigate }) => {
+  const { user, logout } = useAuth();
+  const studentId = user?.id || mockCurrentUser.id;
+  const studentName = user?.name || mockCurrentUser.name;
+
   // Navigation / Tab state
   const [activeMenu, setActiveMenu] = useState('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // Jobs state from shared printService
-  const [jobsList, setJobsList] = useState(() => printService.getStudentJobs());
-  const [currentJob, setCurrentJob] = useState(() => printService.getStudentJobs()[0] || null);
+  const [jobsList, setJobsList] = useState(() => printService.getStudentJobs(studentId));
+  const [currentJob, setCurrentJob] = useState(() => printService.getStudentJobs(studentId)[0] || null);
   const [selectedJobForModal, setSelectedJobForModal] = useState(null);
 
   // Notification state
-  const [notifications, setNotifications] = useState(() => printService.getNotifications('student'));
+  const [notifications, setNotifications] = useState(() => printService.getNotifications('student', studentId));
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false);
 
   // Loading & server connection state (Step 11)
@@ -38,9 +43,9 @@ export const StudentDashboard = ({ onNavigate }) => {
 
     const syncData = () => {
       if (!isMounted) return;
-      const studentJobs = printService.getStudentJobs(mockCurrentUser.id);
+      const studentJobs = printService.getStudentJobs(studentId);
       setJobsList(studentJobs);
-      setNotifications(printService.getNotifications('student', mockCurrentUser.id));
+      setNotifications(printService.getNotifications('student', studentId));
 
       setCurrentJob(prev => {
         if (!prev) return studentJobs[0] || null;
@@ -54,7 +59,7 @@ export const StudentDashboard = ({ onNavigate }) => {
 
     // 2. Initial backend fetch
     setIsLoading(true);
-    printService.syncWithBackend(mockCurrentUser.id)
+    printService.syncWithBackend(studentId)
       .then(() => {
         if (isMounted) syncData();
       })
@@ -70,7 +75,7 @@ export const StudentDashboard = ({ onNavigate }) => {
 
     // 4. Real-time style polling (every 6 seconds) with clean up on unmount
     const pollInterval = setInterval(() => {
-      printService.syncWithBackend(mockCurrentUser.id).catch(() => {});
+      printService.syncWithBackend(studentId).catch(() => {});
     }, 6000);
 
     return () => {
@@ -78,7 +83,7 @@ export const StudentDashboard = ({ onNavigate }) => {
       unsubscribe();
       clearInterval(pollInterval);
     };
-  }, []);
+  }, [studentId]);
 
   // New Print Form state
   const [formData, setFormData] = useState({
@@ -182,8 +187,8 @@ export const StudentDashboard = ({ onNavigate }) => {
         bindingOption: formData.bindingOption,
         binding: formData.bindingOption,
         cost: estimatedNewCost,
-        student: mockCurrentUser.name,
-        studentId: mockCurrentUser.id
+        student: studentName,
+        studentId: studentId
       });
 
       if (newJob) {
@@ -234,7 +239,7 @@ export const StudentDashboard = ({ onNavigate }) => {
     // Call decoupled AI Assistant Service with latest student and system print jobs
     setTimeout(() => {
       const allJobs = printService.getPrintJobs();
-      const currentStudentJobs = printService.getStudentJobs(mockCurrentUser.id);
+      const currentStudentJobs = printService.getStudentJobs(studentId);
       const reply = getAIResponse(query, currentStudentJobs, allJobs);
 
       setChatMessages(prev => [
@@ -246,7 +251,7 @@ export const StudentDashboard = ({ onNavigate }) => {
         }
       ]);
       setIsTyping(false);
-    }, 350);
+    }, 300);
   };
 
   const handleClearChat = () => {
@@ -279,13 +284,13 @@ export const StudentDashboard = ({ onNavigate }) => {
   };
 
   const handleMarkAllAsRead = async () => {
-    const updated = await printService.markNotificationsRead('student', mockCurrentUser.id);
+    const updated = await printService.markNotificationsRead('student', studentId);
     setNotifications(updated);
   };
 
   const handleClearNotifications = async () => {
     if (window.confirm('Are you sure you want to clear all notifications?')) {
-      const updated = await printService.clearNotifications(mockCurrentUser.id);
+      const updated = await printService.clearNotifications(studentId);
       setNotifications(updated);
     }
   };
@@ -398,25 +403,30 @@ export const StudentDashboard = ({ onNavigate }) => {
         {/* Sidebar Bottom: Student Profile & Logout */}
         <div className="student-sidebar-bottom">
           <div className="sidebar-profile-card">
-            <div className="sidebar-avatar-circle">AN</div>
+            <div className="sidebar-avatar-circle">
+              {(studentName || 'Student').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+            </div>
             <div className="sidebar-profile-details">
-              <div className="sidebar-profile-name">Abhinaya N</div>
-              <div className="sidebar-profile-sub">STD-2026-0842</div>
+              <div className="sidebar-profile-name">{studentName}</div>
+              <div className="sidebar-profile-sub">{studentId}</div>
             </div>
           </div>
 
           <button
             type="button"
             className="sidebar-logout-btn"
-            onClick={() => onNavigate && onNavigate('landing')}
-            title="Return to Landing Page"
+            onClick={async () => {
+              await logout();
+              if (onNavigate) onNavigate('login');
+            }}
+            title="Log out of account"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
               <polyline points="16 17 21 12 16 7"></polyline>
               <line x1="21" y1="12" x2="9" y2="12"></line>
             </svg>
-            <span>Back to Landing / Logout</span>
+            <span>Logout</span>
           </button>
         </div>
       </aside>
@@ -442,7 +452,7 @@ export const StudentDashboard = ({ onNavigate }) => {
             </button>
 
             <div>
-              <h1 className="header-greeting-title">Good Morning, Student 👋</h1>
+              <h1 className="header-greeting-title">Good Morning, {studentName} 👋</h1>
               <p className="header-greeting-subtitle">Track your print jobs and stay updated in real time.</p>
             </div>
           </div>
@@ -541,8 +551,10 @@ export const StudentDashboard = ({ onNavigate }) => {
 
             {/* Student Profile Widget */}
             <div className="header-profile-badge">
-              <div className="header-avatar-circle">AN</div>
-              <span className="header-profile-name">Abhinaya N</span>
+              <div className="header-avatar-circle">
+                {(studentName || 'Student').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+              </div>
+              <span className="header-profile-name">{studentName}</span>
             </div>
           </div>
         </header>
@@ -589,6 +601,23 @@ export const StudentDashboard = ({ onNavigate }) => {
             >
               ✕
             </button>
+          </div>
+        )}
+
+        {/* Ready for Collection Banner (Step 13 Polish) */}
+        {readyCount > 0 && (
+          <div className="submission-success-banner" style={{ borderColor: '#86efac', background: '#f0fdf4', color: '#166534' }}>
+            <div className="success-banner-content">
+              <div className="success-banner-icon" style={{ backgroundColor: '#10b981', color: '#ffffff' }}>✓</div>
+              <div>
+                <strong style={{ color: '#15803d' }}>
+                  {readyCount} {readyCount === 1 ? 'Print Job is' : 'Print Jobs are'} Ready for Pickup!
+                </strong>
+                <p style={{ color: '#166534', margin: '0.2rem 0 0 0' }}>
+                  Please visit Xerox Counter 1 with your 4-digit pickup PIN to collect your printed documents.
+                </p>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1037,11 +1066,12 @@ export const StudentDashboard = ({ onNavigate }) => {
                     )}
                   </div>
 
-                  {/* Clickable Quick Questions (Step 8) */}
+                  {/* Clickable Quick Questions (Step 8 & Step 13) */}
                   <div className="chat-prompt-suggestions">
                     <button
                       type="button"
                       className="prompt-chip"
+                      disabled={isTyping}
                       onClick={() => handleSendQuery('Where is my print?')}
                     >
                       Where is my print?
@@ -1049,6 +1079,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                     <button
                       type="button"
                       className="prompt-chip"
+                      disabled={isTyping}
                       onClick={() => handleSendQuery('Estimated wait?')}
                     >
                       Estimated wait?
@@ -1056,6 +1087,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                     <button
                       type="button"
                       className="prompt-chip"
+                      disabled={isTyping}
                       onClick={() => handleSendQuery('Queue position?')}
                     >
                       Queue position?
@@ -1063,6 +1095,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                     <button
                       type="button"
                       className="prompt-chip"
+                      disabled={isTyping}
                       onClick={() => handleSendQuery('Is my print ready?')}
                     >
                       Is my print ready?
@@ -1070,6 +1103,7 @@ export const StudentDashboard = ({ onNavigate }) => {
                     <button
                       type="button"
                       className="prompt-chip"
+                      disabled={isTyping}
                       onClick={() => handleSendQuery('My print jobs')}
                     >
                       My print jobs
@@ -1086,14 +1120,16 @@ export const StudentDashboard = ({ onNavigate }) => {
                       className="form-input chat-input-field"
                       placeholder="Ask about your print jobs, queue, waiting time..."
                       value={inputQuestion}
+                      disabled={isTyping}
                       onChange={(e) => setInputQuestion(e.target.value)}
                     />
                     <Button
                       variant="primary"
                       type="submit"
                       size="sm"
+                      disabled={isTyping || !inputQuestion.trim()}
                     >
-                      Send
+                      {isTyping ? 'Thinking...' : 'Send'}
                     </Button>
                   </form>
                 </div>

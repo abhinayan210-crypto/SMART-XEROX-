@@ -1,21 +1,30 @@
 /**
- * SmartPrint AI Frontend API Service (STEP 10 & STEP 11)
+ * SmartPrint AI Frontend API Service (STEP 10, 11 & 12)
  * Reusable client for communicating with the Node.js/Express SQLite backend.
- * Provides the central backend data access layer with robust error handling.
+ * Provides central backend data access with automatic JWT token attachment and error handling.
  */
+
+import { authService } from './authService.js';
 
 let currentBaseUrl = typeof window !== 'undefined' && window.__API_BASE_URL__ 
   ? window.__API_BASE_URL__ 
-  : (typeof process !== 'undefined' && process.env && process.env.API_BASE_URL ? process.env.API_BASE_URL : 'http://localhost:5000/api');
+  : (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_API_URL || import.meta.env.API_BASE_URL))
+    ? (import.meta.env.VITE_API_URL || import.meta.env.API_BASE_URL)
+    : (typeof process !== 'undefined' && process.env && process.env.API_BASE_URL ? process.env.API_BASE_URL : 'http://localhost:5000/api');
 
 /**
- * Common fetch helper with JSON parsing and error handling
+ * Common fetch helper with JWT header injection, JSON parsing, and error handling
  */
 const request = async (endpoint, options = {}) => {
   const base = apiService.baseUrl || currentBaseUrl;
   const url = `${base}${endpoint}`;
+  
+  const token = authService ? authService.getToken() : null;
+  const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {};
+
   const headers = {
     'Content-Type': 'application/json',
+    ...authHeader,
     ...(options.headers || {})
   };
 
@@ -35,6 +44,10 @@ const request = async (endpoint, options = {}) => {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
+      if (response.status === 401 && authService && typeof window !== 'undefined') {
+        // If unauthorized, token may have expired
+        // authService.logout();
+      }
       throw new Error(data.message || `Request failed with status ${response.status}`);
     }
 
@@ -105,7 +118,7 @@ export const apiService = {
 
   async createPrintJob(jobData) {
     const payload = {
-      student_id: jobData.student_id || jobData.studentId || 'STD-2026-0842',
+      student_id: jobData.student_id || jobData.studentId,
       file_name: jobData.file_name || jobData.fileName || jobData.documentName || 'Document.pdf',
       copies: Math.max(1, Number(jobData.copies) || 1),
       print_type: jobData.print_type || jobData.printType || 'B&W',

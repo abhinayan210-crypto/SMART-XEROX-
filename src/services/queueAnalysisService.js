@@ -148,10 +148,13 @@ export const getQueueInsights = (jobs = [], metrics = null) => {
   const totalCopies = activeQueue.reduce((acc, j) => acc + (Number(j.copies) || 1), 0);
   if (activeQueue.length >= 6 || totalCopies >= 15) {
     workload = 'High';
+    insights.push('Queue workload is currently high. Multiple print jobs are waiting, so students may experience longer turnaround times.');
   } else if (activeQueue.length >= 3 || totalCopies >= 6) {
     workload = 'Moderate';
+    insights.push('Queue workload is currently moderate. Several jobs are waiting, so students may experience a short delay.');
+  } else {
+    insights.push('Queue workload is currently low. Incoming print jobs are being processed promptly with minimal wait.');
   }
-  insights.push(`The queue workload is currently ${workload.toLowerCase()}.`);
 
   // Insight 3: High priority or long waiting job recommendation
   const prioritized = activeQueue.map(job => ({

@@ -224,35 +224,21 @@ export const LandingPage = ({ onNavigate }) => {
         </div>
 
         <div className="solution-features-grid">
-          {/* Feature 1 */}
+          {/* Feature 1: Live Print Tracking */}
           <Card className="solution-card">
             <div className="solution-card-body">
               <div className="solution-icon-box">
                 <span className="solution-emoji">📄</span>
               </div>
-              <h3 className="solution-title">File Tracking</h3>
+              <h3 className="solution-title">Live Print Tracking</h3>
               <p className="solution-text">
-                Track every print job from submission to collection with complete transparency.
-              </p>
-              <div className="solution-pill-tag">Submission → Pickup</div>
-            </div>
-          </Card>
-
-          {/* Feature 2 */}
-          <Card className="solution-card">
-            <div className="solution-card-body">
-              <div className="solution-icon-box">
-                <span className="solution-emoji">🖨️</span>
-              </div>
-              <h3 className="solution-title">Live Status</h3>
-              <p className="solution-text">
-                View Received, Processing, Printing and Ready status live on any mobile or desktop browser.
+                Track every print job with real-time status updates: Received → Processing → Printing → Ready → Collected.
               </p>
               <div className="solution-pill-tag">Live State Sync</div>
             </div>
           </Card>
 
-          {/* Feature 3 */}
+          {/* Feature 2: Waiting Time Prediction */}
           <Card className="solution-card">
             <div className="solution-card-body">
               <div className="solution-icon-box">
@@ -260,13 +246,41 @@ export const LandingPage = ({ onNavigate }) => {
               </div>
               <h3 className="solution-title">Waiting Time Prediction</h3>
               <p className="solution-text">
-                Get an estimated time based on the current print queue and machine throughput.
+                Dynamic turnaround predictions calculated from active queue depth and copy volume.
               </p>
-              <div className="solution-pill-tag">Queue Estimation</div>
+              <div className="solution-pill-tag">Smart Prediction</div>
             </div>
           </Card>
 
-          {/* Feature 4 */}
+          {/* Feature 3: AI Queue Analysis */}
+          <Card className="solution-card">
+            <div className="solution-card-body">
+              <div className="solution-icon-box">
+                <span className="solution-emoji">📊</span>
+              </div>
+              <h3 className="solution-title">AI Queue Analysis</h3>
+              <p className="solution-text">
+                Automated workload classification and congestion insights to keep print center traffic running smoothly.
+              </p>
+              <div className="solution-pill-tag">Workload Insights</div>
+            </div>
+          </Card>
+
+          {/* Feature 4: Smart Job Priority */}
+          <Card className="solution-card">
+            <div className="solution-card-body">
+              <div className="solution-icon-box">
+                <span className="solution-emoji">🎯</span>
+              </div>
+              <h3 className="solution-title">Smart Job Priority</h3>
+              <p className="solution-text">
+                Intelligent attention ranking that highlights long-waiting and high-volume orders for staff decision support.
+              </p>
+              <div className="solution-pill-tag">Operator Support</div>
+            </div>
+          </Card>
+
+          {/* Feature 5: AI Assistant */}
           <Card className="solution-card">
             <div className="solution-card-body">
               <div className="solution-icon-box">
@@ -274,9 +288,23 @@ export const LandingPage = ({ onNavigate }) => {
               </div>
               <h3 className="solution-title">AI Assistant</h3>
               <p className="solution-text">
-                Ask questions about your print job, queue status, and pricing, and get instant responses.
+                Instant answers to student questions regarding print status, queue position, estimated wait, and pickup PINs.
               </p>
-              <div className="solution-pill-tag">24/7 Virtual Desk</div>
+              <div className="solution-pill-tag">Student Intelligence</div>
+            </div>
+          </Card>
+
+          {/* Feature 6: Smart Notifications */}
+          <Card className="solution-card">
+            <div className="solution-card-body">
+              <div className="solution-icon-box">
+                <span className="solution-emoji">🔔</span>
+              </div>
+              <h3 className="solution-title">Smart Notifications</h3>
+              <p className="solution-text">
+                Automatic real-time alerts when print jobs change status and when documents are ready for counter pickup.
+              </p>
+              <div className="solution-pill-tag">Instant Alerts</div>
             </div>
           </Card>
         </div>

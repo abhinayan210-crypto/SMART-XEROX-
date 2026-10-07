@@ -1,18 +1,19 @@
 /**
- * Students API Routes (STEP 10)
- * Handles student registration and retrieval.
+ * Students API Routes (STEP 10 & STEP 12)
+ * Handles student registration and retrieval with authentication and ownership controls.
  */
 
 import express from 'express';
 import { db } from '../database/database.js';
+import { authenticateToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
 /**
  * GET /api/students
- * List all students
+ * List all students (Staff only)
  */
-router.get('/', (req, res) => {
+router.get('/', authenticateToken, requireRole('staff'), (req, res) => {
   try {
     const stmt = db.prepare('SELECT id, name, email, created_at FROM students ORDER BY created_at DESC');
     const students = stmt.all();
@@ -31,11 +32,20 @@ router.get('/', (req, res) => {
 
 /**
  * GET /api/students/:id
- * Retrieve single student by ID
+ * Retrieve single student by ID (Owner student or Staff)
  */
-router.get('/:id', (req, res) => {
+router.get('/:id', authenticateToken, (req, res) => {
   try {
     const { id } = req.params;
+
+    // Check permissions
+    if (req.user.role === 'student' && req.user.id !== id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You do not have permission to view other students\' profiles'
+      });
+    }
+
     const stmt = db.prepare('SELECT id, name, email, created_at FROM students WHERE id = ?');
     const student = stmt.get(id);
 
@@ -61,9 +71,9 @@ router.get('/:id', (req, res) => {
 
 /**
  * POST /api/students
- * Create new student
+ * Create new student (Staff only or internal registration sync)
  */
-router.post('/', (req, res) => {
+router.post('/', authenticateToken, requireRole('staff'), (req, res) => {
   try {
     const { id, name, email } = req.body;
 
@@ -116,11 +126,19 @@ router.post('/', (req, res) => {
 
 /**
  * GET /api/students/:studentId/print-jobs
- * Retrieve all print jobs belonging to a student
+ * Retrieve all print jobs belonging to a student (Owner or Staff)
  */
-router.get('/:studentId/print-jobs', (req, res) => {
+router.get('/:studentId/print-jobs', authenticateToken, (req, res) => {
   try {
     const { studentId } = req.params;
+
+    // Check ownership
+    if (req.user.role === 'student' && req.user.id !== studentId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You cannot view another student\'s print jobs'
+      });
+    }
 
     const student = db.prepare('SELECT id FROM students WHERE id = ?').get(studentId);
     if (!student) {
@@ -162,11 +180,19 @@ router.get('/:studentId/print-jobs', (req, res) => {
 
 /**
  * GET /api/students/:studentId/notifications
- * Retrieve notifications belonging to a student
+ * Retrieve notifications belonging to a student (Owner or Staff)
  */
-router.get('/:studentId/notifications', (req, res) => {
+router.get('/:studentId/notifications', authenticateToken, (req, res) => {
   try {
     const { studentId } = req.params;
+
+    // Check ownership
+    if (req.user.role === 'student' && req.user.id !== studentId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You cannot view another student\'s notifications'
+      });
+    }
 
     const student = db.prepare('SELECT id FROM students WHERE id = ?').get(studentId);
     if (!student) {
@@ -213,11 +239,19 @@ router.get('/:studentId/notifications', (req, res) => {
 
 /**
  * PATCH /api/students/:studentId/notifications/read-all
- * Mark all notifications for a student as read
+ * Mark all notifications for a student as read (Owner or Staff)
  */
-router.patch('/:studentId/notifications/read-all', (req, res) => {
+router.patch('/:studentId/notifications/read-all', authenticateToken, (req, res) => {
   try {
     const { studentId } = req.params;
+
+    // Check ownership
+    if (req.user.role === 'student' && req.user.id !== studentId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You cannot modify another student\'s notifications'
+      });
+    }
 
     const student = db.prepare('SELECT id FROM students WHERE id = ?').get(studentId);
     if (!student) {
@@ -245,11 +279,19 @@ router.patch('/:studentId/notifications/read-all', (req, res) => {
 
 /**
  * DELETE /api/students/:studentId/notifications
- * Clear/delete all notifications for a student
+ * Clear/delete all notifications for a student (Owner or Staff)
  */
-router.delete('/:studentId/notifications', (req, res) => {
+router.delete('/:studentId/notifications', authenticateToken, (req, res) => {
   try {
     const { studentId } = req.params;
+
+    // Check ownership
+    if (req.user.role === 'student' && req.user.id !== studentId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You cannot clear another student\'s notifications'
+      });
+    }
 
     const student = db.prepare('SELECT id FROM students WHERE id = ?').get(studentId);
     if (!student) {

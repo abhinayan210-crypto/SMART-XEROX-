@@ -1,16 +1,18 @@
 import React, { useState } from 'react';
 import Button from './Button';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * Navbar Component for SmartPrint AI
  * Features:
  * - Brand logo & name: "SmartPrint AI"
  * - Navigation links: Home, How It Works, Features
- * - Action buttons: "Student Login", "Staff Login"
+ * - Action buttons: "Student Login", "Staff Login", or User Profile & Dashboard if logged in
  * - Responsive mobile menu
  */
 export const Navbar = ({ activePage = 'landing', onNavigate }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { user, isAuthenticated, logout } = useAuth();
 
   const handleNavClick = (sectionId) => {
     setMobileMenuOpen(false);
@@ -28,6 +30,12 @@ export const Navbar = ({ activePage = 'landing', onNavigate }) => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     }
+  };
+
+  const handleLogout = async () => {
+    setMobileMenuOpen(false);
+    await logout();
+    if (onNavigate) onNavigate('login');
   };
 
   return (
@@ -88,21 +96,42 @@ export const Navbar = ({ activePage = 'landing', onNavigate }) => {
 
         {/* Header Action Buttons */}
         <div className="navbar-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onNavigate && onNavigate('student')}
-          >
-            Student Login
-          </Button>
+          {isAuthenticated && user ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => onNavigate && onNavigate(user.role === 'staff' ? 'staff' : 'student')}
+              >
+                {user.role === 'staff' ? 'Staff Dashboard' : 'Student Dashboard'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleLogout}
+              >
+                Logout
+              </Button>
+            </div>
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onNavigate && onNavigate('login', { role: 'student' })}
+              >
+                Student Login
+              </Button>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onNavigate && onNavigate('staff')}
-          >
-            Staff Login
-          </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onNavigate && onNavigate('login', { role: 'staff' })}
+              >
+                Staff Login
+              </Button>
+            </>
+          )}
 
           {/* Mobile Menu Toggle Button */}
           <button
@@ -148,26 +177,50 @@ export const Navbar = ({ activePage = 'landing', onNavigate }) => {
           </button>
           <div className="mobile-nav-divider" />
           <div className="mobile-nav-actions">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                if (onNavigate) onNavigate('student');
-              }}
-            >
-              Student Login
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                if (onNavigate) onNavigate('staff');
-              }}
-            >
-              Staff Login
-            </Button>
+            {isAuthenticated && user ? (
+              <>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    if (onNavigate) onNavigate(user.role === 'staff' ? 'staff' : 'student');
+                  }}
+                >
+                  {user.role === 'staff' ? 'Staff Dashboard' : 'Student Dashboard'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleLogout}
+                >
+                  Logout ({user.name || user.email})
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    if (onNavigate) onNavigate('login', { role: 'student' });
+                  }}
+                >
+                  Student Login
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    if (onNavigate) onNavigate('login', { role: 'staff' });
+                  }}
+                >
+                  Staff Login
+                </Button>
+              </>
+            )}
           </div>
         </div>
       )}

@@ -8,6 +8,7 @@ import initSqlJs from 'sql.js';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -127,7 +128,7 @@ export const initDatabase = () => {
 
       const seedTransaction = db.transaction(() => {
         // Sample Students
-        insertStudent.run('STD-2026-0842', 'Abhinaya N', 'abhinaya.n@college.edu');
+        insertStudent.run('STD-2026-0842', 'Abhinaya N', 'student@smartprint.com');
         insertStudent.run('STD-2026-0120', 'Student 2', 'student2@college.edu');
         insertStudent.run('STD-2026-0492', 'Student 3', 'student3@college.edu');
 
@@ -144,6 +145,38 @@ export const initDatabase = () => {
       seedTransaction();
       console.log('✓ Initial seed completed successfully.');
     }
+
+    // Seed Demo Accounts (STEP 12)
+    const findUser = db.prepare('SELECT id, role, password_hash FROM users WHERE LOWER(email) = LOWER(?)');
+    const insertUser = db.prepare('INSERT INTO users (id, name, email, password_hash, role) VALUES (?, ?, ?, ?, ?)');
+    const updateUser = db.prepare('UPDATE users SET password_hash = ?, role = ? WHERE LOWER(email) = LOWER(?)');
+
+    // 1. Demo Student: student@smartprint.com / Student@123
+    const existingStudentUser = findUser.get('student@smartprint.com');
+    const studentHash = bcrypt.hashSync('Student@123', 10);
+    if (!existingStudentUser) {
+      insertUser.run('STD-2026-0842', 'Abhinaya N', 'student@smartprint.com', studentHash, 'student');
+      console.log('✓ Seeded Demo Student account (student@smartprint.com)');
+    } else {
+      updateUser.run(studentHash, 'student', 'student@smartprint.com');
+    }
+
+    // Ensure demo student exists in students table
+    const existingStudentRow = db.prepare('SELECT id FROM students WHERE id = ?').get('STD-2026-0842');
+    if (!existingStudentRow) {
+      db.prepare('INSERT INTO students (id, name, email) VALUES (?, ?, ?)').run('STD-2026-0842', 'Abhinaya N', 'student@smartprint.com');
+    }
+
+    // 2. Demo Staff: staff@smartprint.com / Staff@123
+    const existingStaffUser = findUser.get('staff@smartprint.com');
+    const staffHash = bcrypt.hashSync('Staff@123', 10);
+    if (!existingStaffUser) {
+      insertUser.run('STF-2026-0001', 'Staff Operator', 'staff@smartprint.com', staffHash, 'staff');
+      console.log('✓ Seeded Demo Staff account (staff@smartprint.com)');
+    } else {
+      updateUser.run(staffHash, 'staff', 'staff@smartprint.com');
+    }
+
   } catch (error) {
     console.error('Database initialization failed:', error);
     throw error;

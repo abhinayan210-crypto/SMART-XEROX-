@@ -9,6 +9,7 @@ import { initDatabase } from './database/database.js';
 import studentsRouter from './routes/students.js';
 import printJobsRouter from './routes/printJobs.js';
 import notificationsRouter from './routes/notifications.js';
+import authRouter from './routes/auth.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -48,6 +49,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Mount Routes
+app.use('/api/auth', authRouter);
 app.use('/api/students', studentsRouter);
 app.use('/api/print-jobs', printJobsRouter);
 app.use('/api/notifications', notificationsRouter);

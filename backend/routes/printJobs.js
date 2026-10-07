@@ -1,11 +1,12 @@
 /**
- * Print Jobs API Routes (STEP 10)
+ * Print Jobs API Routes (STEP 10 & STEP 12)
  * Handles print job submissions, queue retrieval, and status advancement
- * with automatic student notifications.
+ * with RBAC authentication and automatic student notifications.
  */
 
 import express from 'express';
 import { db } from '../database/database.js';
+import { authenticateToken, requireRole } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -84,28 +85,56 @@ const createStatusNotification = (job, newStatus) => {
 
 /**
  * GET /api/print-jobs
- * Retrieve all print jobs with student metadata
+ * Retrieve print jobs. Staff gets all print jobs; Students only get their own jobs.
  */
-router.get('/', (req, res) => {
+router.get('/', authenticateToken, (req, res) => {
   try {
-    const stmt = db.prepare(`
-      SELECT 
-        pj.id,
-        pj.student_id,
-        s.name AS student_name,
-        s.email AS student_email,
-        pj.file_name,
-        pj.copies,
-        pj.print_type,
-        pj.page_range,
-        pj.status,
-        pj.submitted_at,
-        pj.updated_at
-      FROM print_jobs pj
-      LEFT JOIN students s ON pj.student_id = s.id
-      ORDER BY pj.submitted_at DESC
-    `);
-    const jobs = stmt.all();
+    const isStaff = req.user && req.user.role === 'staff';
+    const userId = req.user ? req.user.id : null;
+
+    let stmt;
+    let jobs;
+
+    if (isStaff) {
+      stmt = db.prepare(`
+        SELECT 
+          pj.id,
+          pj.student_id,
+          s.name AS student_name,
+          s.email AS student_email,
+          pj.file_name,
+          pj.copies,
+          pj.print_type,
+          pj.page_range,
+          pj.status,
+          pj.submitted_at,
+          pj.updated_at
+        FROM print_jobs pj
+        LEFT JOIN students s ON pj.student_id = s.id
+        ORDER BY pj.submitted_at DESC
+      `);
+      jobs = stmt.all();
+    } else {
+      stmt = db.prepare(`
+        SELECT 
+          pj.id,
+          pj.student_id,
+          s.name AS student_name,
+          s.email AS student_email,
+          pj.file_name,
+          pj.copies,
+          pj.print_type,
+          pj.page_range,
+          pj.status,
+          pj.submitted_at,
+          pj.updated_at
+        FROM print_jobs pj
+        LEFT JOIN students s ON pj.student_id = s.id
+        WHERE pj.student_id = ?
+        ORDER BY pj.submitted_at DESC
+      `);
+      jobs = stmt.all(userId);
+    }
 
     res.json({
       success: true,
@@ -122,9 +151,9 @@ router.get('/', (req, res) => {
 
 /**
  * GET /api/print-jobs/:id
- * Retrieve single print job
+ * Retrieve single print job with ownership enforcement
  */
-router.get('/:id', (req, res) => {
+router.get('/:id', authenticateToken, (req, res) => {
   try {
     const { id } = req.params;
     const stmt = db.prepare(`
@@ -153,6 +182,14 @@ router.get('/:id', (req, res) => {
       });
     }
 
+    // Role ownership check: student cannot view another student's job
+    if (req.user.role === 'student' && job.student_id !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You do not have permission to view this print job'
+      });
+    }
+
     res.json({
       success: true,
       data: job
@@ -168,11 +205,19 @@ router.get('/:id', (req, res) => {
 
 /**
  * POST /api/print-jobs
- * Create a new print job
+ * Create a new print job associated with authenticated student
  */
-router.post('/', (req, res) => {
+router.post('/', authenticateToken, (req, res) => {
   try {
-    const { student_id, file_name, copies, print_type, page_range } = req.body;
+    const { file_name, copies, print_type, page_range } = req.body;
+    let student_id = req.body.student_id;
+
+    // Enforce ownership: Students always create jobs under their own student ID
+    if (req.user.role === 'student') {
+      student_id = req.user.id;
+    } else if (!student_id || !student_id.trim()) {
+      student_id = req.user.id;
+    }
 
     if (!student_id || typeof student_id !== 'string' || !student_id.trim()) {
       return res.status(400).json({
@@ -188,15 +233,25 @@ router.post('/', (req, res) => {
       });
     }
 
-    // Verify student exists
+    // Ensure student exists in students table
     const studentStmt = db.prepare('SELECT id FROM students WHERE id = ?');
-    const student = studentStmt.get(student_id.trim());
+    let student = studentStmt.get(student_id.trim());
 
     if (!student) {
-      return res.status(404).json({
-        success: false,
-        message: 'Associated student does not exist'
-      });
+      // Auto-sync if student is authenticated user
+      if (req.user.id === student_id) {
+        db.prepare('INSERT INTO students (id, name, email) VALUES (?, ?, ?)').run(
+          req.user.id,
+          req.user.name || 'Student',
+          req.user.email || 'student@smartprint.com'
+        );
+        student = studentStmt.get(student_id.trim());
+      } else {
+        return res.status(404).json({
+          success: false,
+          message: 'Associated student does not exist'
+        });
+      }
     }
 
     const numCopies = Math.max(1, parseInt(copies, 10) || 1);
@@ -242,9 +297,9 @@ router.post('/', (req, res) => {
 
 /**
  * PATCH /api/print-jobs/:id/status
- * Update print job status with validated transitions
+ * Update print job status (Restricted to Staff members only)
  */
-router.patch('/:id/status', (req, res) => {
+router.patch('/:id/status', authenticateToken, requireRole('staff'), (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;

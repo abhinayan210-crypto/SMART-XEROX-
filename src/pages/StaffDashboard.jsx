@@ -8,6 +8,7 @@ import {
   mockStaffAnalytics
 } from '../data/mockData';
 import { printService } from '../services/printService';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * Staff Dashboard Component - STEP 4 & STEP 5
@@ -16,6 +17,8 @@ import { printService } from '../services/printService';
  * and monitor live printing stations in real time.
  */
 export const StaffDashboard = ({ onNavigate }) => {
+  const { user, logout } = useAuth();
+  const staffName = user?.name || mockStaffUser.name || 'Staff Operator';
   // Navigation / Tab state: 'dashboard' | 'queue' | 'active' | 'completed' | 'notifications'
   const [activeTab, setActiveTab] = useState('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -178,8 +181,11 @@ export const StaffDashboard = ({ onNavigate }) => {
     }
   };
 
+  // Enriched queue jobs list with priority and wait-time metadata
+  const queueWithPriority = prioritizedJobs;
+
   // Filtered queue jobs list
-  const filteredQueueJobs = queueJobs.filter(job => {
+  const filteredQueueJobs = queueWithPriority.filter(job => {
     // Tab filter
     if (activeTab === 'active' && (job.status !== 'Received' && job.status !== 'Processing' && job.status !== 'Printing')) {
       return false;
@@ -196,7 +202,7 @@ export const StaffDashboard = ({ onNavigate }) => {
       job.queueNo.toLowerCase().includes(query) ||
       job.id.toLowerCase().includes(query) ||
       job.pickupPin.includes(query) ||
-      job.printType.toLowerCase().includes(query);
+      (job.printType && job.printType.toLowerCase().includes(query));
 
     return matchesStatus && matchesSearch;
   });
@@ -321,25 +327,30 @@ export const StaffDashboard = ({ onNavigate }) => {
         {/* Sidebar Bottom: Staff Profile & Logout */}
         <div className="student-sidebar-bottom">
           <div className="sidebar-profile-card">
-            <div className="sidebar-avatar-circle" style={{ backgroundColor: '#0f172a' }}>ST</div>
+            <div className="sidebar-avatar-circle" style={{ backgroundColor: '#0f172a' }}>
+              {(staffName || 'Staff').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+            </div>
             <div className="sidebar-profile-details">
-              <div className="sidebar-profile-name">Print Shop Staff</div>
-              <div className="sidebar-profile-sub">Operator • Central Desk</div>
+              <div className="sidebar-profile-name">{staffName}</div>
+              <div className="sidebar-profile-sub">{user?.role ? `${user.role.toUpperCase()} • Central Desk` : 'Operator • Central Desk'}</div>
             </div>
           </div>
 
           <button
             type="button"
             className="sidebar-logout-btn"
-            onClick={() => onNavigate && onNavigate('landing')}
-            title="Return to Landing Page"
+            onClick={async () => {
+              await logout();
+              if (onNavigate) onNavigate('login');
+            }}
+            title="Log out of account"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
               <polyline points="16 17 21 12 16 7"></polyline>
               <line x1="21" y1="12" x2="9" y2="12"></line>
             </svg>
-            <span>Back to Landing / Logout</span>
+            <span>Logout</span>
           </button>
         </div>
       </aside>
@@ -365,7 +376,7 @@ export const StaffDashboard = ({ onNavigate }) => {
             </button>
 
             <div>
-              <h1 className="header-greeting-title">Staff Dashboard 🖨️</h1>
+              <h1 className="header-greeting-title">Staff Dashboard ({staffName}) 🖨️</h1>
               <p className="header-greeting-subtitle">Manage print requests and keep the queue moving.</p>
             </div>
           </div>
@@ -766,13 +777,13 @@ export const StaffDashboard = ({ onNavigate }) => {
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <th>Queue & Position</th>
-                        <th>Est. Wait</th>
                         <th>Student</th>
                         <th>File Name</th>
                         <th>Copies</th>
-                        <th>Print Type</th>
                         <th>Status</th>
+                        <th>Queue Position</th>
+                        <th>Estimated Waiting Time</th>
+                        <th>Priority</th>
                         <th>Action</th>
                       </tr>
                     </thead>
@@ -786,7 +797,39 @@ export const StaffDashboard = ({ onNavigate }) => {
                       ) : (
                         filteredQueueJobs.map((job) => (
                           <tr key={job.id}>
-                            {/* Queue Position & No */}
+                            {/* Student */}
+                            <td>
+                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{job.student}</div>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                {job.studentId} • {job.department || 'Campus'}
+                              </div>
+                            </td>
+
+                            {/* File Name */}
+                            <td>
+                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{job.fileName}</div>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                                {job.pages || job.pageCount} pages • {job.printType} • {job.paperSize} {job.isDoubleSided ? '• Duplex' : ''} {job.binding && job.binding !== 'None' ? `• ${job.binding}` : ''}
+                              </div>
+                            </td>
+
+                            {/* Copies */}
+                            <td>
+                              <span style={{ fontWeight: 600 }}>{job.copies}</span>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                                {job.copies > 1 ? 'copies' : 'copy'}
+                              </span>
+                            </td>
+
+                            {/* Status */}
+                            <td>
+                              <StatusBadge
+                                status={getBadgeVariant(job.status)}
+                                labelOverride={job.status}
+                              />
+                            </td>
+
+                            {/* Queue Position */}
                             <td>
                               <div className="flex items-center gap-1.5">
                                 {job.status !== 'Ready' && job.status !== 'Collected' && job.status !== 'Completed' ? (
@@ -810,74 +853,32 @@ export const StaffDashboard = ({ onNavigate }) => {
                                 ) : (
                                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>—</span>
                                 )}
-                                <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                  {job.queueNo}
+                                <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                  {job.queueNo || job.id}
                                 </span>
-                              </div>
-                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                                ID: {job.id}
                               </div>
                             </td>
 
                             {/* Estimated Waiting Time */}
                             <td>
                               <div style={{ fontWeight: 700, fontSize: '0.85rem', color: job.status === 'Ready' ? '#166534' : 'var(--text-primary)' }}>
-                                {job.status !== 'Ready' && job.status !== 'Collected' && job.status !== 'Completed'
-                                  ? `#${job.queuePosition || 1} — ${job.estimatedWaitTime}`
-                                  : job.estimatedWaitTime}
+                                {job.estimatedWaitTime}
                               </div>
                               <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                                {job.status === 'Printing' ? 'Printing live' : (job.status === 'Ready' ? 'Pickup ready' : 'Queue wait')}
+                                {job.status === 'Printing' ? 'Printing live' : (job.status === 'Ready' ? 'Pickup ready' : 'Queue turnaround')}
                               </div>
                             </td>
 
-                            {/* Student */}
+                            {/* Priority */}
                             <td>
-                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{job.student}</div>
-                              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                {job.studentId} • {job.department}
-                              </div>
-                            </td>
-
-                            {/* File Name */}
-                            <td>
-                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{job.fileName}</div>
-                              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                                {job.pages} pages • {job.paperSize} {job.isDoubleSided ? '• Duplex' : ''} {job.binding !== 'None' ? `• ${job.binding}` : ''}
-                              </div>
-                            </td>
-
-                            {/* Copies */}
-                            <td>
-                              <span style={{ fontWeight: 600 }}>{job.copies}</span>
-                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
-                                {job.copies > 1 ? 'copies' : 'copy'}
+                              <span className={`priority-pill priority-${(job.priority || 'Normal').toLowerCase()}`} title={job.priorityReason || job.reason}>
+                                {job.priority || 'Normal'}
                               </span>
-                            </td>
-
-                            {/* Print Type */}
-                            <td>
-                              <span
-                                style={{
-                                  display: 'inline-block',
-                                  padding: '0.15rem 0.5rem',
-                                  borderRadius: 'var(--radius-full)',
-                                  fontSize: '0.72rem',
-                                  fontWeight: 600,
-                                  backgroundColor: job.printType === 'Colour' ? '#fae8ff' : '#f1f5f9',
-                                  color: job.printType === 'Colour' ? '#86198f' : '#334155'
-                                }}
-                              >
-                                {job.printType}
-                              </span>
-                            </td>
-
-                            {/* Status */}
-                            <td>
-                              <StatusBadge
-                                status={getBadgeVariant(job.status)}
-                                labelOverride={job.status}
-                              />
+                              {job.priorityReason && (
+                                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', maxWidth: '130px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={job.priorityReason}>
+                                  {job.priorityReason}
+                                </div>
+                              )}
                             </td>
 
                             {/* Action Buttons */}

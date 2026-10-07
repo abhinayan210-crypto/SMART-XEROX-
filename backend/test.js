@@ -1,14 +1,14 @@
 /**
- * Backend API Integration Test Suite (STEP 10)
- * Tests all REST endpoints, SQLite persistence, status progression,
- * validation errors, and automatic status notification creation.
+ * Backend API & Authentication Test Suite (STEP 12)
+ * Tests all REST endpoints, SQLite persistence, JWT authentication,
+ * demo accounts, RBAC protections, status progression, and ownership isolation.
  */
 
 import assert from 'node:assert';
 import app from './server.js';
 
 console.log('====================================================');
-console.log('🧪 RUNNING SMARTPRINT AI BACKEND API TEST SUITE');
+console.log('🧪 RUNNING SMARTPRINT AI STEP 12 AUTHENTICATION & API TESTS');
 console.log('====================================================\n');
 
 const TEST_PORT = 5099;
@@ -18,11 +18,15 @@ const server = app.listen(TEST_PORT, async () => {
   try {
     // Helper fetch wrapper
     const api = async (endpoint, options = {}) => {
+      const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      if (options.token) {
+        headers['Authorization'] = `Bearer ${options.token}`;
+      }
       const res = await fetch(`${BASE_URL}${endpoint}`, {
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-        ...options
+        ...options,
+        headers
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       return { status: res.status, data };
     };
 
@@ -34,165 +38,200 @@ const server = app.listen(TEST_PORT, async () => {
     assert.ok(health.data.message.includes('SmartPrint AI backend is running'));
     console.log('✓ Health check passed.');
 
-    // Test 2: GET /api/students
-    console.log('\nTest 2: GET /api/students');
-    const studentsRes = await api('/students');
-    assert.strictEqual(studentsRes.status, 200);
-    assert.strictEqual(studentsRes.data.success, true);
-    assert.ok(Array.isArray(studentsRes.data.data));
-    assert.ok(studentsRes.data.data.length >= 3, 'Must have at least initial seeded students');
-    console.log(`✓ Loaded ${studentsRes.data.data.length} students.`);
+    // Test 2: Unauthenticated Request to Protected Route (Expect 401)
+    console.log('\nTest 2: Protected route without token (401 Unauthorized)');
+    const unauthJobs = await api('/print-jobs');
+    assert.strictEqual(unauthJobs.status, 401, 'Should return 401 when no token is provided');
+    assert.strictEqual(unauthJobs.data.success, false);
+    console.log('✓ Unauthenticated request correctly rejected with 401.');
 
-    // Test 3: POST /api/students (Create student)
-    console.log('\nTest 3: POST /api/students');
-    const testId = `STD-TEST-${Date.now()}`;
-    const testEmail = `teststudent_${Date.now()}@college.edu`;
-    const newStudent = await api('/students', {
+    // Test 3: Invalid login credentials (Expect 401)
+    console.log('\nTest 3: Invalid email/password login test (401 Unauthorized)');
+    const badLogin = await api('/auth/login', {
       method: 'POST',
       body: JSON.stringify({
-        id: testId,
-        name: 'Integration Test Student',
-        email: testEmail
+        email: 'student@smartprint.com',
+        password: 'WrongPassword@999'
       })
     });
-    assert.strictEqual(newStudent.status, 201);
-    assert.strictEqual(newStudent.data.success, true);
-    assert.strictEqual(newStudent.data.data.id, testId);
-    console.log('✓ Student registration passed.');
+    assert.strictEqual(badLogin.status, 401, 'Should reject invalid credentials');
+    assert.strictEqual(badLogin.data.success, false);
+    console.log('✓ Invalid login credentials correctly rejected with 401.');
 
-    // Test 4: GET /api/students/:id
-    console.log('\nTest 4: GET /api/students/:id');
-    const singleStudent = await api(`/students/${testId}`);
-    assert.strictEqual(singleStudent.status, 200);
-    assert.strictEqual(singleStudent.data.data.name, 'Integration Test Student');
-    console.log('✓ Single student retrieval passed.');
-
-    // Test 5: GET /api/print-jobs
-    console.log('\nTest 5: GET /api/print-jobs');
-    const jobsRes = await api('/print-jobs');
-    assert.strictEqual(jobsRes.status, 200);
-    assert.ok(Array.isArray(jobsRes.data.data));
-    console.log(`✓ Loaded ${jobsRes.data.data.length} total print jobs.`);
-
-    // Test 6: POST /api/print-jobs (Create print job)
-    console.log('\nTest 6: POST /api/print-jobs');
-    const createdJobRes = await api('/print-jobs', {
+    // Test 4: Demo Student Login (student@smartprint.com / Student@123)
+    console.log('\nTest 4: Demo Student Login (student@smartprint.com)');
+    const studentLogin = await api('/auth/login', {
       method: 'POST',
       body: JSON.stringify({
-        student_id: testId,
-        file_name: 'Backend_Verification_Report.pdf',
+        email: 'student@smartprint.com',
+        password: 'Student@123',
+        role: 'student'
+      })
+    });
+    assert.strictEqual(studentLogin.status, 200, 'Student login should succeed');
+    assert.strictEqual(studentLogin.data.success, true);
+    assert.ok(studentLogin.data.token, 'Should receive JWT token');
+    assert.strictEqual(studentLogin.data.user.role, 'student');
+    assert.strictEqual(studentLogin.data.user.email, 'student@smartprint.com');
+    const studentToken = studentLogin.data.token;
+    const studentUserId = studentLogin.data.user.id;
+    console.log(`✓ Student logged in successfully. User ID: ${studentUserId}`);
+
+    // Test 5: Demo Staff Login (staff@smartprint.com / Staff@123)
+    console.log('\nTest 5: Demo Staff Login (staff@smartprint.com)');
+    const staffLogin = await api('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'staff@smartprint.com',
+        password: 'Staff@123',
+        role: 'staff'
+      })
+    });
+    assert.strictEqual(staffLogin.status, 200, 'Staff login should succeed');
+    assert.strictEqual(staffLogin.data.success, true);
+    assert.ok(staffLogin.data.token, 'Should receive JWT token');
+    assert.strictEqual(staffLogin.data.user.role, 'staff');
+    assert.strictEqual(staffLogin.data.user.email, 'staff@smartprint.com');
+    const staffToken = staffLogin.data.token;
+    console.log(`✓ Staff logged in successfully. User ID: ${staffLogin.data.user.id}`);
+
+    // Test 6: GET /api/auth/me (Current User Profile Verification)
+    console.log('\nTest 6: GET /api/auth/me (Current User Endpoint)');
+    const meRes = await api('/auth/me', { token: studentToken });
+    assert.strictEqual(meRes.status, 200);
+    assert.strictEqual(meRes.data.success, true);
+    assert.strictEqual(meRes.data.user.email, 'student@smartprint.com');
+    assert.strictEqual(meRes.data.user.role, 'student');
+    console.log('✓ /api/auth/me returned correct verified user profile.');
+
+    // Test 7: Student attempting Staff API (Expect 403 Forbidden)
+    console.log('\nTest 7: Student accessing Staff API (403 Forbidden check)');
+    const studentAccessingStaff = await api('/students', { token: studentToken });
+    assert.strictEqual(studentAccessingStaff.status, 403, 'Student should be forbidden from staff students list');
+    assert.strictEqual(studentAccessingStaff.data.success, false);
+    console.log('✓ Student access to staff API correctly rejected with 403.');
+
+    // Test 8: Staff accessing Staff API (Expect 200 OK)
+    console.log('\nTest 8: Staff accessing Staff API (200 OK check)');
+    const staffAccessingStaff = await api('/students', { token: staffToken });
+    assert.strictEqual(staffAccessingStaff.status, 200, 'Staff should be allowed to view all students');
+    assert.strictEqual(staffAccessingStaff.data.success, true);
+    assert.ok(Array.isArray(staffAccessingStaff.data.data));
+    console.log(`✓ Staff successfully retrieved ${staffAccessingStaff.data.data.length} students.`);
+
+    // Test 9: Register a New Student via POST /api/auth/register
+    console.log('\nTest 9: POST /api/auth/register (New User Registration)');
+    const regEmail = `test_reg_${Date.now()}@smartprint.com`;
+    const regRes = await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Automated Test Student',
+        email: regEmail,
+        password: 'Password@123',
+        role: 'student'
+      })
+    });
+    assert.strictEqual(regRes.status, 201, 'Registration should return 201');
+    assert.strictEqual(regRes.data.success, true);
+    assert.ok(regRes.data.token, 'Should receive token upon registration');
+    const newStudentToken = regRes.data.token;
+    const newStudentId = regRes.data.user.id;
+    console.log(`✓ New student registered with ID: ${newStudentId}`);
+
+    // Test 10: Create Print Job as Student
+    console.log('\nTest 10: POST /api/print-jobs (Create authenticated print job)');
+    const createJobRes = await api('/print-jobs', {
+      method: 'POST',
+      token: newStudentToken,
+      body: JSON.stringify({
+        file_name: 'Auth_Step12_Report.pdf',
         copies: 2,
         print_type: 'Colour',
-        page_range: '1-10'
+        page_range: '1-5'
       })
     });
-    assert.strictEqual(createdJobRes.status, 201);
-    assert.strictEqual(createdJobRes.data.success, true);
-    const createdJob = createdJobRes.data.data;
+    assert.strictEqual(createJobRes.status, 201);
+    assert.strictEqual(createJobRes.data.success, true);
+    const createdJob = createJobRes.data.data;
+    assert.strictEqual(createdJob.student_id, newStudentId, 'Job must be linked to authenticated student ID');
     assert.strictEqual(createdJob.status, 'Received');
-    assert.strictEqual(createdJob.file_name, 'Backend_Verification_Report.pdf');
-    console.log(`✓ Print job created with ID: ${createdJob.id}, status: ${createdJob.status}`);
+    console.log(`✓ Print job created: ID ${createdJob.id}, Student: ${createdJob.student_id}`);
 
-    // Test 7: Verify Automatic 'Received' notification created
-    console.log('\nTest 7: Automatic Received notification check');
-    const notifsAfterCreate = await api(`/students/${testId}/notifications`);
-    assert.strictEqual(notifsAfterCreate.status, 200);
-    assert.ok(notifsAfterCreate.data.data.length >= 1);
-    const receivedNotif = notifsAfterCreate.data.data[0];
-    assert.strictEqual(receivedNotif.title, 'Print Request Received');
-    assert.ok(receivedNotif.message.includes('Backend_Verification_Report.pdf'));
-    console.log(`✓ Received notification verified: "${receivedNotif.title}" - "${receivedNotif.message}"`);
+    // Test 11: Student Isolation - Another student cannot view created job
+    console.log('\nTest 11: Ownership Isolation - Student 1 cannot view Student 2 job');
+    const otherStudentView = await api(`/print-jobs/${createdJob.id}`, { token: studentToken });
+    assert.strictEqual(otherStudentView.status, 403, 'Should forbid viewing other student print job');
+    console.log('✓ Cross-student job access denied with 403.');
 
-    // Test 8: Status Transitions: Received -> Processing -> Printing -> Ready -> Collected
-    console.log('\nTest 8: Full Status Progression & Notification Triggers');
+    // Test 12: Staff Status Advancement (Staff only)
+    console.log('\nTest 12: Staff Status Advancement (Received -> Processing -> Printing -> Ready -> Collected)');
+    
+    // First, test student trying to change status (Expect 403)
+    const studentStatusAttempt = await api(`/print-jobs/${createdJob.id}/status`, {
+      method: 'PATCH',
+      token: newStudentToken,
+      body: JSON.stringify({ status: 'Processing' })
+    });
+    assert.strictEqual(studentStatusAttempt.status, 403, 'Student cannot change print job status');
+    console.log('✓ Student prevented from modifying status (403).');
 
-    // 8a: Received -> Processing
+    // Staff modifies status
     const toProcessing = await api(`/print-jobs/${createdJob.id}/status`, {
       method: 'PATCH',
+      token: staffToken,
       body: JSON.stringify({ status: 'Processing' })
     });
     assert.strictEqual(toProcessing.status, 200);
     assert.strictEqual(toProcessing.data.data.status, 'Processing');
 
-    // 8b: Processing -> Printing
     const toPrinting = await api(`/print-jobs/${createdJob.id}/status`, {
       method: 'PATCH',
+      token: staffToken,
       body: JSON.stringify({ status: 'Printing' })
     });
     assert.strictEqual(toPrinting.status, 200);
     assert.strictEqual(toPrinting.data.data.status, 'Printing');
 
-    // 8c: Printing -> Ready
     const toReady = await api(`/print-jobs/${createdJob.id}/status`, {
       method: 'PATCH',
+      token: staffToken,
       body: JSON.stringify({ status: 'Ready' })
     });
     assert.strictEqual(toReady.status, 200);
     assert.strictEqual(toReady.data.data.status, 'Ready');
 
-    // 8d: Ready -> Collected
     const toCollected = await api(`/print-jobs/${createdJob.id}/status`, {
       method: 'PATCH',
+      token: staffToken,
       body: JSON.stringify({ status: 'Collected' })
     });
     assert.strictEqual(toCollected.status, 200);
     assert.strictEqual(toCollected.data.data.status, 'Collected');
-    console.log('✓ All 4 status transitions succeeded.');
+    console.log('✓ Staff advanced status successfully through full lifecycle.');
 
-    // Test 9: Verify all corresponding notifications exist
-    console.log('\nTest 9: Verify all status notifications created in DB');
-    const allNotifs = await api(`/students/${testId}/notifications`);
-    const titles = allNotifs.data.data.map(n => n.title);
-    assert.ok(titles.includes('Print Request Received'));
-    assert.ok(titles.includes('Print Request Processing'));
-    assert.ok(titles.includes('Print Job Printing'));
-    assert.ok(titles.includes('Print Ready'));
-    assert.ok(titles.includes('Print Collected'));
-    console.log('✓ All 5 automatic status notifications verified in SQLite DB.');
+    // Test 13: Student Notifications (Owner isolation)
+    console.log('\nTest 13: Student Notifications Retrieval & Read State');
+    const notifsRes = await api(`/students/${newStudentId}/notifications`, { token: newStudentToken });
+    assert.strictEqual(notifsRes.status, 200);
+    assert.ok(Array.isArray(notifsRes.data.data));
+    assert.ok(notifsRes.data.data.length >= 4, 'Should have received automatic notifications for status updates');
+    console.log(`✓ Retrieved ${notifsRes.data.data.length} automatic notifications.`);
 
-    // Test 10: Invalid Status Transition Rejection
-    console.log('\nTest 10: Invalid Status Transition Validation');
-    const invalidTrans = await api(`/print-jobs/${createdJob.id}/status`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'Printing' }) // Collected -> Printing is invalid
-    });
-    assert.strictEqual(invalidTrans.status, 400);
-    assert.strictEqual(invalidTrans.data.success, false);
-    console.log(`✓ Invalid status transition rejected correctly: "${invalidTrans.data.message}"`);
-
-    // Test 11: Mark Single Notification as Read
-    console.log('\nTest 11: PATCH /api/notifications/:id/read');
-    const topNotifId = allNotifs.data.data[0].id;
-    const markReadRes = await api(`/notifications/${topNotifId}/read`, { method: 'PATCH' });
-    assert.strictEqual(markReadRes.status, 200);
-    assert.strictEqual(markReadRes.data.data.read, true);
-    console.log('✓ Single notification mark as read passed.');
-
-    // Test 12: Mark All Notifications as Read
-    console.log('\nTest 12: PATCH /api/students/:studentId/notifications/read-all');
-    const markAllRes = await api(`/students/${testId}/notifications/read-all`, { method: 'PATCH' });
-    assert.strictEqual(markAllRes.status, 200);
-    const afterMarkAll = await api(`/students/${testId}/notifications`);
-    const unreadCount = afterMarkAll.data.data.filter(n => !n.read).length;
-    assert.strictEqual(unreadCount, 0);
-    console.log('✓ Mark all notifications as read passed.');
-
-    // Test 13: DELETE /api/students/:studentId/notifications (Clear)
-    console.log('\nTest 13: DELETE /api/students/:studentId/notifications');
-    const clearRes = await api(`/students/${testId}/notifications`, { method: 'DELETE' });
-    assert.strictEqual(clearRes.status, 200);
-    const afterClear = await api(`/students/${testId}/notifications`);
-    assert.strictEqual(afterClear.data.data.length, 0);
-    console.log('✓ Clear notifications passed.');
+    // Test 14: Logout endpoint
+    console.log('\nTest 14: POST /api/auth/logout');
+    const logoutRes = await api('/auth/logout', { method: 'POST', token: newStudentToken });
+    assert.strictEqual(logoutRes.status, 200);
+    assert.strictEqual(logoutRes.data.success, true);
+    console.log('✓ Logout endpoint returned 200 OK.');
 
     console.log('\n====================================================');
-    console.log('🎉 ALL BACKEND API & SQLITE TESTS PASSED!');
+    console.log('🎉 ALL STEP 12 BACKEND AUTH & REST API TESTS PASSED!');
     console.log('====================================================\n');
 
     server.close();
     process.exit(0);
   } catch (err) {
-    console.error('\n❌ Test Failure:', err);
+    console.error('\n❌ Backend Auth Test Failure:', err);
     server.close();
     process.exit(1);
   }

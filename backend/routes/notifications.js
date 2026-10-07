@@ -1,20 +1,27 @@
 /**
- * Notifications API Routes (STEP 10)
- * Handles student notification retrieval, read state updating, and clearing.
+ * Notifications API Routes (STEP 10 & STEP 12)
+ * Handles student notification retrieval, read state updating, and clearing with RBAC.
  */
 
 import express from 'express';
 import { db } from '../database/database.js';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
 /**
  * POST /api/notifications
- * Manually create a notification
+ * Manually create a notification (Authenticated users or staff)
  */
-router.post('/', (req, res) => {
+router.post('/', authenticateToken, (req, res) => {
   try {
-    const { student_id, job_id, title, message, type } = req.body;
+    let { student_id, job_id, title, message, type } = req.body;
+
+    if (req.user.role === 'student') {
+      student_id = req.user.id;
+    } else if (!student_id) {
+      student_id = req.user.id;
+    }
 
     if (!student_id || !title || !message) {
       return res.status(400).json({
@@ -54,9 +61,9 @@ router.post('/', (req, res) => {
 
 /**
  * PATCH /api/notifications/:id/read
- * Mark a single notification as read
+ * Mark a single notification as read (Owner or Staff)
  */
-router.patch('/:id/read', (req, res) => {
+router.patch('/:id/read', authenticateToken, (req, res) => {
   try {
     const { id } = req.params;
 
@@ -65,6 +72,14 @@ router.patch('/:id/read', (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Notification not found'
+      });
+    }
+
+    // Check ownership
+    if (req.user.role === 'student' && notif.student_id !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You cannot modify another student\'s notification'
       });
     }
 

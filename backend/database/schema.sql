@@ -3,7 +3,17 @@
 
 PRAGMA foreign_keys = ON;
 
--- 1. Students Table
+-- 1. Users Table (STEP 12 Authentication)
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('student', 'staff')),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Students Table
 CREATE TABLE IF NOT EXISTS students (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -40,6 +50,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 
 -- Indexes for optimal lookup performance
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_print_jobs_student_id ON print_jobs(student_id);
 CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_notifications_student_id ON notifications(student_id);
